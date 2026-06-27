@@ -1,27 +1,19 @@
-"""Kairos custom tools for the Antigravity agent harness."""
+"""Kairos tools — thin wrappers over policy core (usable by Antigravity + MCP)."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from kairos.models.schemas import ContextSnapshot, SurfaceDecision
+from kairos.core.context import read_context
+from kairos.core.heartbeat import heartbeat_service
+from kairos.models.schemas import DeliveryMode, FeedbackAction
 from kairos.observability.bus import event_bus
 
 
 def get_current_context() -> dict[str, Any]:
-    """Read the live headspace vector: calendar, location, time, attention capacity.
-
-    Returns a ContextSnapshot-shaped dict. Stub until context sensor is wired.
-    """
-    # TODO: wire Google Calendar poller + location toggle
-    ctx = ContextSnapshot(
-        calendar_gap_minutes=90,
-        meeting_density_today=0.3,
-        location_type="cafe",
-        surfaces_today=1,
-    )
-    event_bus.emit("context", "Read current headspace", context=ctx.model_dump())
-    return ctx.model_dump()
+    """Read the live headspace vector: calendar, location, time, attention capacity."""
+    return read_context().model_dump()
 
 
 def get_relevant_bookmarks(query: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -53,48 +45,48 @@ def get_cluster_summary(topic: str) -> dict[str, Any] | None:
     return None
 
 
-def surface_now(context_override: str | None = None) -> dict[str, Any]:
-    """Run the full ranking pipeline against current context.
+def run_heartbeat(
+    delivery: DeliveryMode = "auto",
+    context_override: str | None = None,
+) -> dict[str, Any]:
+    """Run one heartbeat: context → rank → gate → publish to configured targets.
 
-    Applies feasibility filter, vector search, bandit adjustment, and interrupt gate.
-    Returns a SurfaceDecision. Silence (should_surface=false) is valid.
+    Returns KAIROS_OK when silent or SURFACE with digest + host delivery hints.
+    MCP clients should render delivery.rendered_markdown in chat on SURFACE.
 
     Args:
+        delivery: auto (configured adapters), return_only (no side effects), none.
         context_override: Optional free-text context hint for demo overrides.
     """
-    ctx = ContextSnapshot.model_validate(get_current_context())
-    if context_override:
-        event_bus.emit("context_override", context_override)
-
-    # TODO: wire ranking pipeline (steps 1–4 from PLAN.md)
-    decision = SurfaceDecision(
-        should_surface=False,
-        gate_reasons={
-            "daily_budget": True,
-            "calendar_gap": ctx.calendar_gap_minutes > 30,
-            "min_gap": True,
-            "score_threshold": False,
-        },
-        context=ctx,
+    result = asyncio.run(
+        heartbeat_service.run(delivery=delivery, context_override=context_override)
     )
-    event_bus.emit(
-        "ranking",
-        "Ranking pipeline complete",
-        should_surface=decision.should_surface,
-        gate_reasons=decision.gate_reasons,
-    )
-    return decision.model_dump()
+    return result.model_dump()
 
 
-def deliver_notification(digest_json: str) -> dict[str, str]:
-    """Send a macOS notification with the cluster digest.
+async def run_heartbeat_async(
+    delivery: DeliveryMode = "auto",
+    context_override: str | None = None,
+) -> dict[str, Any]:
+    """Async heartbeat for harness and HTTP handlers."""
+    result = await heartbeat_service.run(delivery=delivery, context_override=context_override)
+    return result.model_dump()
+
+
+def record_feedback(
+    notification_id: str,
+    action: FeedbackAction,
+    url: str | None = None,
+) -> dict[str, str]:
+    """Record user feedback on a surfaced digest (any host: web, MCP chat, etc.).
 
     Args:
-        digest_json: JSON-serialized ClusterDigest from surface_now.
+        notification_id: ID from run_heartbeat SURFACE response.
+        action: expanded, link_click, snoozed, dismissed, acted, or ignored.
+        url: Optional link URL when action is link_click.
     """
-    # TODO: wire terminal-notifier
-    event_bus.emit("notification", "Notification delivery stub", digest=digest_json[:200])
-    return {"status": "stub", "message": "terminal-notifier not wired yet"}
+    del url  # TODO: pass through to feedback_events
+    return heartbeat_service.record_feedback(notification_id, action)
 
 
 def add_bookmark(url: str, notes: str = "") -> dict[str, str]:
@@ -109,11 +101,12 @@ def add_bookmark(url: str, notes: str = "") -> dict[str, str]:
     return {"status": "stub", "url": url}
 
 
+# Query + heartbeat tools for Antigravity harness (no direct OS delivery tool)
 ALL_TOOLS = [
     get_current_context,
     get_relevant_bookmarks,
     get_cluster_summary,
-    surface_now,
-    deliver_notification,
+    run_heartbeat,
+    record_feedback,
     add_bookmark,
 ]
