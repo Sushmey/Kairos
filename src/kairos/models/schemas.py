@@ -43,6 +43,38 @@ class BookmarkEnrichment(BaseModel):
     perishability: Literal["evergreen", "dated", "time-sensitive"] = "evergreen"
 
 
+class BookmarkDocument(BaseModel):
+    """Bookmark document stored in MongoDB (X API + optional enrichment)."""
+
+    id: str | None = Field(default=None, alias="_id")
+    x_tweet_id: str
+    url: str
+    raw_text: str
+    author_id: str | None = None
+    author_username: str | None = None
+    tweet_created_at: datetime | None = None
+    context_annotations: list[dict] = Field(default_factory=list)
+    referenced_tweets: list[dict] = Field(default_factory=list)
+
+    embedding: list[float] | None = None
+    cluster_id: str | None = None
+    topic_tags: list[str] = Field(default_factory=list)
+    consumption_mode: Literal[
+        "read-deep", "skim", "watch", "act-in-world", "save-to-project"
+    ] | None = None
+    energy_cost: float | None = Field(default=None, ge=0.0, le=1.0)
+    geo_anchor: str | None = None
+    geo_coords: list[float] | None = None
+    perishability: Literal["evergreen", "dated", "time-sensitive"] | None = None
+
+    ingested_at: datetime | None = None
+    last_synced_at: datetime | None = None
+    last_surfaced_at: datetime | None = None
+    surface_count: int = 0
+
+    model_config = {"populate_by_name": True}
+
+
 class ClusterDigest(BaseModel):
     """Topic cluster digest surfaced to the user."""
 

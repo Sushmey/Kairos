@@ -1,4 +1,5 @@
 from kairos.models.schemas import (
+    BookmarkDocument,
     BookmarkEnrichment,
     ClusterDigest,
     ContextSnapshot,
@@ -13,6 +14,7 @@ from kairos.models.schemas import (
 )
 
 __all__ = [
+    "BookmarkDocument",
     "BookmarkEnrichment",
     "ClusterDigest",
     "ContextSnapshot",
