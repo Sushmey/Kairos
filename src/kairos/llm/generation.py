@@ -56,7 +56,7 @@ def generate_cluster_digest(
             f"Context:\n{context_json}"
         ),
         system_instruction=(
-            "Write a cluster digest for a macOS notification. "
+            "Write a cluster digest for surfacing via web inbox or host agent chat. "
             "why_now: one line explaining timing fit (gap, location, calendar). "
             "links: up to 5 entries with url placeholder '#', label, consumption_mode."
         ),
