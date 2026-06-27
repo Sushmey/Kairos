@@ -24,5 +24,14 @@ class Settings(BaseSettings):
     daily_surface_budget: int = 3
     min_gap_between_surfaces_minutes: int = 45
 
+    # Delivery adapters (comma-separated: web, os)
+    delivery_targets: str = "web"
+    web_base_url: str = "http://localhost:8420"
+    os_delivery_enabled: bool = False
+    mcp_suppress_ok_in_chat: bool = True
+
+    def delivery_target_list(self) -> list[str]:
+        return [t.strip() for t in self.delivery_targets.split(",") if t.strip()]
+
 
 settings = Settings()
