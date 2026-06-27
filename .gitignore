@@ -1,3 +1,12 @@
 .agents
 .claude
 skills-lock.json
+.env
+.venv
+__pycache__/
+*.pyc
+.mcp.json
+opencode.json
+.codex
+.cursor
+.vscode
