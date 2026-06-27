@@ -19,7 +19,7 @@ The median hackathon project embeds bookmarks, does cosine similarity, sends a p
 - It never learns from that ignoring
 - Silence is never a feature
 
-Kairos is a **contextual bandit**: at each candidate moment, score bookmarks for fit-to-this-moment, decide whether to interrupt at all, and update the policy on sparse implicit feedback. "Learns when depending on headspace" is the exact specification of a bandit policy improving over time.
+Kairos is a **contextual bandit**: at each candidate moment, score bookmark clusters for fit-to-this-moment, decide whether to interrupt at all, and update the policy on sparse implicit feedback. "Learns when depending on headspace" is the exact specification of a bandit policy improving over time.
 
 ---
 
@@ -28,51 +28,164 @@ Kairos is a **contextual bandit**: at each candidate moment, score bookmarks for
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        INGEST LAYER                         │
-│  X bookmark export → LLM enrichment → SQLite + embeddings   │
+│  X bookmark export → LLM enrichment → MongoDB + embeddings  │
+│  HDBSCAN clustering → cluster summaries                     │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
 │                      CONTEXT SENSOR                         │
-│  Calendar (Google API) · Geofence · Time · Restraint budget │
+│  Calendar (Google API) · Location toggle · Time             │
+│  Headspace = topical affinity vector + attention capacity   │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
-│                     BANDIT POLICY                           │
-│  Thompson sampling over feasible candidates → interrupt gate│
+│                     RANKING PIPELINE                        │
+│  1. Feasibility filter (energy cost, restraint budget)      │
+│  2. Topical score ($vectorSearch: moment → cluster)         │
+│  3. Bandit adjustment (Thompson sampling, learned weights)  │
+│  4. Interrupt gate (threshold check → surface or silence)   │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
 │                      DELIVERY LAYER                         │
-│  Surface bookmark + "Why now" rationale · Capture feedback  │
+│  Cluster digest (summary + ranked links) + "Why now"        │
+│  macOS notification → feedback capture (tap/snooze/dismiss) │
 └──────────────────────────┬──────────────────────────────────┘
                            │
-┌──────────────────────────▼──────────────────────────────────┐
-│                    SLEEP-TIME PASS (nightly)                │
-│  Re-enrich · GEPA-tune prompts · Emit "what I learned" diff │
-└─────────────────────────────────────────────────────────────┘
+          ┌────────────────┴────────────────┐
+          ▼                                 ▼
+  BANDIT UPDATE (online)          GEPA PASS (nightly)
+  after every notification        re-enrich · tune prompts
+  updates timing policy           emits "what I learned" diff
 ```
+
+---
+
+## Notification Format: Cluster Digest, Not Single Bookmark
+
+The unit surfaced is a **topic cluster digest**, not an individual bookmark:
+
+```
+┌──────────────────────────────────────────────────┐
+│  Distributed Systems (8 bookmarks)               │
+│                                                  │
+│  You're heading into an infra architecture       │
+│  meeting in 40 min. These might be useful:       │
+│                                                  │
+│  · [CAP theorem + modern tradeoffs] — dense read │
+│  · [Kafka vs Redpanda thread] — 3 min skim       │
+│  · [Jepsen test results for Postgres] — reference│
+│                                                  │
+│  [Open all]  [Snooze 2h]  [Not relevant]         │
+└──────────────────────────────────────────────────┘
+```
+
+Links within a digest are ranked by relevance to current context, not ingest order. Snooze applies to the whole cluster for this context window and re-queues it with the context snapshot stamped on it.
+
+---
+
+## Headspace: Two Dimensions
+
+"Headspace" decomposes into two orthogonal components that drive different parts of the ranking:
+
+**Topical affinity** — what are you mentally oriented toward?
+- Upcoming calendar event titles (embedded as intent signal)
+- Recent event titles (topic trail from what just ended)
+- Location type: office → work mode, cafe → exploratory, gym → nothing technical
+- Post-meeting window: 15–30 min after a multi-person event, topics are primed
+
+**Attention capacity** — how much cognitive bandwidth is available?
+- Calendar gap size (minutes until next event)
+- Meeting density today (% of day in meetings)
+- Minutes since last meeting (recovery window)
+- Surfaces already consumed today (fatigue proxy)
+
+Topical affinity determines **which cluster** to surface. Attention capacity determines **whether any cluster is feasible** (energy cost filter).
 
 ---
 
 ## Data Models
 
-### Bookmark Schema (enriched at ingest)
+### MongoDB Collections
+
+**`bookmarks`** — one document per bookmark, embedding stored inline
 
 ```python
 {
-  "id": str,
+  "_id": ObjectId(),
   "url": str,
   "raw_text": str,
-  "embedding": list[float],          # sentence-transformers
+  "embedding": list[float],           # 384-dim, sentence-transformers all-MiniLM-L6-v2
+  "cluster_id": ObjectId,             # assigned at ingest, updated nightly
   "topic_tags": list[str],
-  "consumption_mode": str,           # read-deep | skim | watch | act-in-world | save-to-project
-  "energy_cost": float,              # 0.0–1.0 (long ML thread = high, 2-min video = low)
-  "geo_anchor": str | None,          # extracted place/product name if present
-  "geo_coords": tuple | None,        # resolved lat/lon if geo_anchor
-  "perishability": str,              # evergreen | dated | time-sensitive
+  "consumption_mode": str,            # read-deep | skim | watch | act-in-world | save-to-project
+  "energy_cost": float,               # 0.0–1.0
+  "geo_anchor": str | None,           # extracted place/product name
+  "geo_coords": [float, float] | None,# [lat, lon]
+  "perishability": str,               # evergreen | dated | time-sensitive
   "created_at": datetime,
   "last_surfaced_at": datetime | None,
   "surface_count": int,
+}
+```
+
+**`clusters`** — one document per topic cluster
+
+```python
+{
+  "_id": ObjectId(),
+  "name": str,                        # LLM-generated label
+  "summary": str,                     # 2-sentence LLM summary, GEPA-tuned
+  "centroid_embedding": list[float],  # mean of member embeddings
+  "member_count": int,
+  "last_updated": datetime,
+}
+```
+
+**`feedback_events`** — one document per notification interaction
+
+```python
+{
+  "_id": ObjectId(),
+  "notification_id": str,
+  "cluster_id": ObjectId,
+  "context_snapshot": dict,           # full headspace vector at fire time
+  "notification_text": str,           # exact text shown (input to GEPA eval)
+  "links_shown": list[str],           # bookmark URLs in the digest
+  "events": [
+    { "type": "shown",      "t": 0 },
+    { "type": "expanded",   "t": 4 },
+    { "type": "link_click", "t": 9,  "url": str },
+    { "type": "dismissed",  "t": 61 },
+  ],
+  "derived_reward": float,            # computed from event sequence
+  "snooze_context": dict | None,      # context snapshot if action was snooze
+  "created_at": datetime,
+}
+```
+
+**`bandit_params`** — one document per cluster_class × context_class pair
+
+```python
+{
+  "cluster_class": str,               # e.g. "distributed-systems"
+  "context_class": str,               # e.g. "pre-meeting:infra"
+  "alpha": float,                     # Thompson sampling beta distribution params
+  "beta": float,
+  "last_updated": datetime,
+}
+```
+
+**`optimization_runs`** — GEPA pass history
+
+```python
+{
+  "run_at": datetime,
+  "prompt_before": str,
+  "prompt_after": str,
+  "engagement_before": float,
+  "engagement_after": float,
+  "diff_summary": str,                # "what I learned" — shown in dashboard
 }
 ```
 
@@ -80,31 +193,73 @@ Kairos is a **contextual bandit**: at each candidate moment, score bookmarks for
 
 ```python
 {
-  "hour": int,                        # 0–23
-  "day_of_week": int,                 # 0=Mon
-  "is_weekend": bool,
-  "calendar_gap_minutes": int,        # minutes until next event
-  "meeting_density_today": float,     # meetings / 8h workday
+  # Topical affinity
+  "upcoming_event_title": str,
+  "upcoming_event_embedding": list[float],
+  "recent_event_title": str | None,
+  "post_meeting_minutes": int | None,  # time since last multi-person event ended
+  "location_type": str,                # desk | commute | gym | cafe | near_anchor | unknown
+
+  # Attention capacity
+  "calendar_gap_minutes": int,
+  "meeting_density_today": float,
   "minutes_since_last_meeting": int,
-  "next_event_title_embedding": list[float],  # intent signal
-  "location_type": str,               # desk | commute | gym | cafe | near_anchor | unknown
-  "surfaces_today": int,              # restraint counter
+  "surfaces_today": int,
   "time_since_last_surface_minutes": int,
+
+  # Time
+  "hour": int,
+  "day_of_week": int,
+  "is_weekend": bool,
 }
 ```
 
-### Feedback Event Schema
+---
+
+## Ranking Pipeline
+
+### Step 1 — Feasibility Filter
 
 ```python
-{
-  "bookmark_id": str,
-  "context_snapshot": dict,           # context vector at time of surface
-  "action": str,                      # opened | dwelled | saved | acted | snoozed | dismissed | ignored
-  "snooze_duration_minutes": int | None,
-  "timestamp": datetime,
-  "reward": float,                    # computed from action (see Reward Function)
-}
+# MongoDB query before any vector search
+{ "energy_cost": { "$lte": available_capacity },
+  "cluster_id": { "$nin": snoozed_cluster_ids } }
 ```
+
+### Step 2 — Topical Score (Atlas $vectorSearch)
+
+```python
+pipeline = [
+  { "$vectorSearch": {
+      "index": "bookmark_embedding_index",
+      "path": "embedding",
+      "queryVector": moment_vector,     # embedded headspace context
+      "numCandidates": 50,
+      "limit": 10,
+  }},
+  { "$match": { "energy_cost": { "$lte": available_capacity } } },
+  { "$addFields": { "vector_score": { "$meta": "vectorSearchScore" } } },
+  { "$sort": { "vector_score": -1 } }
+]
+```
+
+### Step 3 — Bandit Adjustment
+
+Thompson sample from `bandit_params` for each candidate cluster × current context class. Adjusted score = `vector_score × bandit_weight`. The bandit reshapes pure similarity with learned history — it's how "infra threads before architecture meetings" gets amplified over time.
+
+### Step 4 — Interrupt Gate
+
+```
+surfaces_today < daily_budget          ✓/✗
+calendar_gap_minutes > energy_cost     ✓/✗
+time_since_last_surface > min_gap      ✓/✗
+adjusted_score > learned_threshold     ✓/✗
+
+All pass → surface digest
+Any fail → silence (re-evaluate at next context change)
+```
+
+**Silence is the feature.**
 
 ---
 
@@ -112,74 +267,137 @@ Kairos is a **contextual bandit**: at each candidate moment, score bookmarks for
 
 | Action | Reward | Rationale |
 |--------|--------|-----------|
-| `acted` (went to place, added to todo) | +1.0 | Highest signal — passive → execution achieved |
-| `dwelled` (opened + read >30s) | +0.7 | Strong engagement |
-| `opened` | +0.3 | Weak positive |
-| `saved` (copy to doc/note) | +0.6 | Signals utility |
-| `snoozed` | 0.0 (re-queue) | Right thing, wrong time — re-surface with context stamp |
-| `dismissed` | −0.3 | Wrong thing |
-| `ignored` (surfaced, no interaction) | −0.5 | Worst: trained user to ignore |
+| `acted` (went to place, added to todo) | +1.0 | Passive → execution achieved |
+| `clicked ≥2 links` | +0.8 | Strong engagement |
+| `clicked 1 link + dwelled >30s` | +0.6 | Solid engagement |
+| `expanded digest` | +0.4 | Interest signal |
+| `dwelled >15s, no click` | +0.2 | Weak positive |
+| `snoozed` | 0.0 (re-queue) | Right thing, wrong time |
+| `dismissed` | −0.4 | Wrong thing |
+| `ignored` (expired without interaction) | −0.6 | Trained user to ignore |
 
-**Snooze is the most valuable label.** A snooze says "relevant content, wrong context" — re-queuing with the context snapshot stamped on it is how the policy learns timing without explicit feedback.
+**Dwell time alone is insufficient.** A positive label requires at minimum `expanded` or `link_click` — high dwell with zero clicks is ambiguous and treated as neutral. This guards against Goodhart: the agent cannot game its reward by writing longer summaries.
+
+**Snooze is the most informative timing signal.** Re-queue with context snapshot stamped on it; the bandit learns "this cluster gets snoozed when meeting density > 0.7."
 
 ---
 
-## Bandit Policy
+## Two Self-Improvement Loops
 
-**Algorithm:** Thompson sampling over a logistic reward model per bookmark class.
+These are separate optimizers and must stay decoupled:
 
-Why not an LLM: sparse feedback (tens of events), not thousands. Thompson sampling converges in exactly this regime, stays interpretable, and the exploration half is critical — pure exploitation surfaces the same five bookmarks forever and never discovers the other 95% of the hoard.
-
-**Feature join:** `[context_vector ‖ bookmark_features]` → logistic model → P(positive engagement)
-
-**Interrupt gate:** Before surfacing, check:
-1. `surfaces_today < daily_budget` (starts at 5, learned per user)
-2. `calendar_gap_minutes > bookmark.energy_cost_minutes` (enough time to consume)
-3. `time_since_last_surface_minutes > min_gap` (no spam)
-4. Score exceeds exploration-adjusted threshold
-
-If gate fails → silence. **Silence is the feature.**
+```
+feedback_event.derived_reward
+        │
+        ├──► BANDIT UPDATE (online, after every event)
+        │    Updates: bandit_params alpha/beta for cluster × context pair
+        │    Effect: better timing — when to surface which cluster
+        │
+        └──► GEPA OPTIMIZATION (offline, nightly)
+             Input: (cluster_content, context, notification_text) → reward
+             Updates: summary/rationale generation prompt
+             Effect: better framing — how the digest is written
+             Artifact: optimization_runs diff (the demo closing slide)
+```
 
 ---
 
 ## "Why Now" Rationale
 
-Every surfacing includes one generated line exposing the policy decision:
+Every digest includes one line exposing the policy decision, generated by the GEPA-tuned prompt:
 
 > *"Dense read · 90-min gap · you usually absorb these Sunday morning at a coffee shop"*
 
-Generated by an LLM prompt, tuned by GEPA on feedback signal. This doubles as UX (transparency) and demo evidence (learning happened — the rationale changes between sessions).
+This doubles as UX (transparency) and proof of learning (the rationale changes between sessions as the prompt evolves).
 
 ---
 
 ## Calendar Pull Mode
 
-When a calendar event title semantically matches a bookmark cluster → proactively assemble a dossier before the event. No manual query needed.
+When an upcoming event title semantically matches a bookmark cluster (cosine similarity > 0.7), proactively assemble a dossier without waiting for the bandit to fire.
 
-Example: Event titled "Straiker interview prep" → surface the hoarded threads on AI security, MCP, prompt injection.
+Example: "Infra Architecture Review" → surfaces distributed-systems cluster 30 min before the event.
 
-Implementation: on each calendar poll, embed event titles, cosine-search bookmark index, threshold at 0.7 similarity, bundle top-k into a pre-event digest.
+This is a separate trigger path that bypasses the interrupt gate — calendar intent is high-confidence enough to always surface.
 
 ---
 
 ## Geo-Anchoring
 
-At ingest, extract place/product mentions from bookmark text (LLM). Resolve to coordinates. Geofence radius: 300m.
+At ingest: extract place/product mentions (LLM), resolve to coordinates (geopy). Geofence radius: 300m.
 
-Trigger: user enters geofence AND calendar gap AND energy budget permit → surface the bookmark with "you're near [place]".
+Trigger: location enters geofence + calendar gap exists + energy budget available → surface geo-anchored cluster.
 
-Demo simplification: a manual "I am here" location toggle rather than continuous background GPS (avoids OS permissions hell during hack).
+Demo: manual "I am here" toggle. Continuous background GPS is an OS permissions swamp — skip it.
 
 ---
 
-## Sleep-Time Pass (Nightly)
+## Interfaces
 
-1. **Re-enrich** bookmarks where `surface_count == 0` with updated context stats
-2. **Update bandit** parameters from accumulated feedback log
-3. **GEPA-tune** the enrichment prompt and rationale-generation prompt against the feedback-labeled eval set
-4. **Emit a diff:** "here's how my model of your attention changed — added attribution extraction, updated coffee-shop context weight"
+### Web Dashboard (single page, two panes)
 
-The diff is the closing demo slide. Watching the machine edit its own prompts is theater.
+No split between user view and admin view — the observability IS the demo.
+
+```
+┌─────────────────────────┬──────────────────────────────────┐
+│   UPCOMING / HISTORY    │   AGENT ACTIVITY (live via SSE)  │
+│                         │                                  │
+│  ● 2:30pm               │  14:22 scored 8 clusters         │
+│    Distributed Systems  │  14:22 infra-arch → 0.84 ✓       │
+│    [before your mtg]    │  14:22 gate: gap=42m ✓ budget ✓  │
+│                         │  14:22 → surfaced digest         │
+│  ✓ 11am — engaged       │                                  │
+│  ✗ 9am — dismissed      │  LAST SLEEP-TIME PASS            │
+│                         │  prompt diff (summary v3→v4):    │
+│  Engagement rate        │  - "Here are relevant threads"   │
+│  ████████░░ 74% (+12%)  │  + "Before {event}, these {n}…"  │
+│                         │  engagement: 61% → 74% ✓         │
+│  [Manage clusters]      │                                  │
+│  [Restraint budget: 3]  │                                  │
+└─────────────────────────┴──────────────────────────────────┘
+```
+
+Real-time updates via **Server-Sent Events** (SSE) — one-directional, 20 lines of FastAPI, no WebSocket setup.
+
+### Notification Delivery
+
+macOS system notification (`terminal-notifier`). Fires from the scheduler, taps the OS. The web dashboard shows it in the activity log simultaneously. Clean separation: delivery vs. observability.
+
+### MCP Server (FastMCP)
+
+Makes the bookmark brain available as context in any AI-assisted workflow. The killer use case: coding in Claude Code and asking it to review an architecture decision — it calls `get_relevant_bookmarks` and pulls your hoarded threads directly into the conversation.
+
+```python
+@mcp.tool()
+def get_relevant_bookmarks(query: str, limit: int = 5) -> list[Bookmark]:
+    """Semantic search over bookmark index."""
+
+@mcp.tool()
+def get_cluster_summary(topic: str) -> ClusterDigest:
+    """Return the cluster closest to topic with generated summary."""
+
+@mcp.tool()
+def surface_now(context: str | None = None) -> Notification | None:
+    """Run full ranking pipeline against current context, return top candidate."""
+
+@mcp.tool()
+def add_bookmark(url: str, notes: str = "") -> Bookmark:
+    """Ingest a new bookmark into the pipeline."""
+```
+
+---
+
+## Scheduling
+
+Custom scheduler eliminated. Three Claude Code mechanisms replace it:
+
+| Job | Mechanism | Interval |
+|-----|-----------|----------|
+| Context polling + bandit decision (demo) | `/loop` in Claude Code session | 5 min |
+| Context polling + bandit decision (prod) | Desktop Scheduled Task | 5 min |
+| Nightly GEPA sleep-time pass | Cloud Routine → `POST /optimize` | Daily 2am |
+
+During the demo: Claude Code session stays open with Kairos MCP connected. The `/loop` runs every 5 min, calls MCP tools, makes decisions. **The session transcript is the agent observability.** No custom logging UI needed.
 
 ---
 
@@ -187,97 +405,111 @@ The diff is the closing demo slide. Watching the machine edit its own prompts is
 
 | Component | Tool |
 |-----------|------|
-| Storage | SQLite (bookmarks, feedback) + DuckDB (metrics rollup) |
-| Embeddings | `sentence-transformers` (all-MiniLM-L6-v2) |
-| Bandit | `scikit-learn` logistic regression + Thompson sampling (custom, ~50 lines) |
+| Persistence | MongoDB Atlas (all collections) |
+| Vector search | Atlas `$vectorSearch` (inline with bookmark docs) |
+| Embeddings | `sentence-transformers` all-MiniLM-L6-v2 |
+| Clustering | HDBSCAN (natural topic boundaries, no fixed k) |
+| Bandit | Thompson sampling over logistic model (`scikit-learn`, ~50 lines custom) |
 | Prompt optimization | DSPy + GEPA |
+| API backend | FastAPI + SSE |
+| Scheduling | Claude Code `/loop` (demo) + Desktop Task (prod) + Cloud Routine (GEPA) |
+| Notification delivery | `terminal-notifier` (macOS) |
+| MCP server | FastMCP |
 | Calendar | Google Calendar API (OAuth2) |
-| Bookmark ingest | X bookmark export CSV/JSON (not live API — see risk #1) |
-| LLM calls | Claude claude-sonnet-4-6 via Anthropic SDK |
 | Geo | `geopy` for geocoding, manual toggle for demo |
+| Bookmark ingest | X data export (not live API — see risk below) |
+| LLM | Claude claude-sonnet-4-6 via Anthropic SDK |
 
 ---
 
-## X Bookmark Access — Risk #1 (De-risk First)
+## X Bookmark Access — De-risk in Hour 1
 
 The X API bookmark endpoint requires OAuth2 user-context, is rate-limited, and pricing has been volatile. **Do not architect around the live API.**
 
-Plan:
-- Primary: ingest from X's data export (Settings → Your Account → Download an archive)
+- Primary: X data export (Settings → Your Account → Download an archive)
 - Stretch: live sync via OAuth2 if quota allows
-- Demo: use the export; judges will not care
+- Demo: export is sufficient; judges will not care
 
-**Verify current API state in hour 1 before any other decision.**
+**Verify current API state before any other decision.**
 
 ---
 
 ## Demo Strategy — No Real Feedback in 48h
 
-Real continual learning takes weeks of data. A 48h demo with no feedback curve is a dead demo.
+Real continual learning takes weeks. A 48h demo with no feedback curve is a dead demo.
 
-Solution:
-1. Seed a **synthetic persona** with scripted preferences (e.g., "Rohit never reads long ML papers on back-to-back days, devours them Sunday at a cafe")
-2. Simulate 2 weeks of feedback events against that persona
-3. Show the engagement-rate curve climbing, dismissal/snooze rate falling
-4. Do **one live adaptation on stage**: surface a bookmark in the "wrong" context, hit dismiss, watch the bandit update, surface a better one
+1. Seed a **synthetic persona** with scripted preferences ("never reads long ML papers on back-to-back days, devours them Sunday at a cafe")
+2. Simulate 2 weeks of feedback events against that persona to populate `feedback_events`
+3. Show engagement-rate curve climbing, dismissal/snooze rate falling (MongoDB aggregation → Chart.js)
+4. **One live adaptation on stage**: surface a digest in the wrong context, hit dismiss, watch bandit update, surface a better one
 
-Be explicit that real learning takes weeks; the simulator compresses it to 3 minutes. Judges respect this more than a fake-real demo.
+Be explicit that real learning takes weeks; the simulator compresses it to 3 minutes. Judges respect this.
 
 ---
 
-## Build Order (Hackathon Sequencing)
+## Build Order
 
-### Hour 0–2: Foundation (non-negotiable first)
-- [ ] Ingest X bookmark export → SQLite schema
-- [ ] LLM enrichment pipeline (batch, async): topic, consumption_mode, energy_cost, geo_anchor, perishability
-- [ ] Build the **eval harness** — a fixed set of context×bookmark pairs with ground-truth preferences from the synthetic persona. **Cannot demo learning without a yardstick. Build this before the bandit.**
+### Hour 0–2: Foundation
+- [ ] MongoDB Atlas setup, collections + vector search index
+- [ ] Ingest X bookmark export → `bookmarks` collection with embeddings
+- [ ] LLM enrichment (batch, async): topic_tags, consumption_mode, energy_cost, geo_anchor, perishability
+- [ ] HDBSCAN clustering → populate `clusters` collection
+- [ ] **Eval harness first**: fixed context×cluster pairs with ground-truth from synthetic persona
 
-### Hour 2–5: Context + Bandit
-- [ ] Context sensor: Google Calendar poller, time features, restraint counter
-- [ ] Thompson sampling bandit over logistic reward model
-- [ ] Interrupt gate
-- [ ] Feedback capture: opened / snoozed / dismissed / acted
+### Hour 2–5: Context + Ranking
+- [ ] Context sensor: Google Calendar poller, time features, post-meeting window detection
+- [ ] `$vectorSearch` ranking pipeline (steps 1–2)
+- [ ] Thompson sampling bandit (steps 3–4)
+- [ ] Interrupt gate + restraint budget
 
-### Hour 5–8: Delivery + Geo
-- [ ] Surface endpoint with "Why now" rationale (LLM-generated)
-- [ ] Geo-anchor extraction at ingest + geofence trigger
-- [ ] Calendar pull mode (event title → bookmark dossier)
+### Hour 5–8: Delivery + Feedback
+- [ ] macOS notification via `terminal-notifier` with cluster digest
+- [ ] Feedback capture: `feedback_events` write on tap/snooze/dismiss
+- [ ] `derived_reward` computation from event sequence
+- [ ] Snooze re-queue with context snapshot
+- [ ] Geo-anchor extraction + geofence trigger
+- [ ] Calendar pull mode (event title → cluster dossier)
 
-### Hour 8–12: Sleep-Time + GEPA
-- [ ] Nightly consolidation: re-enrich, update bandit
-- [ ] GEPA loop on rationale/enrichment prompts against feedback-labeled eval set
-- [ ] "What I learned" diff generation
+### Hour 8–12: Self-Improvement Loops
+- [ ] Bandit online update (alpha/beta on `bandit_params` after each event)
+- [ ] GEPA loop on summary/rationale prompt against feedback-labeled eval set
+- [ ] `optimization_runs` write with prompt diff
+- [ ] `POST /optimize` endpoint for Cloud Routine trigger
 
-### Hour 12–24: Simulator + Demo
-- [ ] Synthetic persona + feedback simulator
-- [ ] Metrics rollup (DuckDB): engagement rate, dismissal rate, snooze→conversion rate per session
-- [ ] Live accuracy chart (session-over-session)
+### Hour 12–18: Interfaces
+- [ ] FastAPI backend with SSE endpoint for live activity stream
+- [ ] Web dashboard: two-pane layout, Chart.js engagement chart, prompt diff view
+- [ ] FastMCP server with 4 tools
+- [ ] Claude Code `/loop` prompt wired to MCP tools
 
-### Hour 24–36: Polish + Edge Cases
-- [ ] Restraint budget learning (per-user daily cap)
-- [ ] Snooze re-queue with context stamp
-- [ ] Demo script and stage choreography
+### Hour 18–24: Simulator + Demo Prep
+- [ ] Synthetic persona + feedback event simulator
+- [ ] MongoDB aggregation for metrics (engagement rate, dismissal rate, session-over-session)
+- [ ] Demo script + stage choreography
+- [ ] "What I learned" diff as closing slide
+
+### Hour 24–36: Polish
+- [ ] Restraint budget learning from feedback
+- [ ] "Why now" rationale tuned by GEPA
+- [ ] Desktop Scheduled Task setup for production path
 
 ### Hour 36–48: Buffer / Stretch
-- [ ] Live X API sync (if time + quota)
-- [ ] Real GPS geofence (if time + not an OS permissions nightmare)
-- [ ] Additional bookmark sources (Pocket, Readwise export)
+- [ ] Live X API sync
+- [ ] Additional sources (Pocket, Readwise export)
 
 ---
 
-## Three Things to Do Before Anyone Else Starts
+## Three Things Before Anyone Else Starts
 
-1. **Build the eval harness first.** You cannot demonstrate learning without a yardstick. Most teams realize this at hour 20. Self-generated evals from the corpus are also a self-improvement-stack flex in the pitch.
-
-2. **Use snooze as your primary label.** "Right thing, wrong time" is the most informative signal for a timing model and the one every other team will miss. Implement snooze capture in hour 3, not hour 30.
-
-3. **Make learning visible.** A session-to-session diff of what the system changed about itself — the prompt it rewrote, the context weight it shifted, the geo-anchor it learned — is worth more on stage than any accuracy number. Show the machine in the act of editing itself.
+1. **Eval harness before the bandit.** No yardstick = no demo. Self-generated evals are also a self-improvement-stack flex in the pitch.
+2. **Snooze capture in hour 3, not hour 30.** Right-thing-wrong-time is the most informative timing signal and the one every other team misses.
+3. **Make learning visible.** The session-to-session prompt diff is worth more on stage than any accuracy number. Show the machine editing itself.
 
 ---
 
 ## Pitch Frame
 
-> Most second brains are write-only graveyards. You bookmark 500 things and read 12. Kairos doesn't make you a better searcher — it becomes a better interrupter. It learns that you never read long ML threads on back-to-back days but devour them Sunday morning at a coffee shop. It learns that "not now" on a ramen rec means "remind me when I'm near Chinatown with an hour free." The policy improves every night on what it got wrong today, without you lifting a finger. Passive hoarding becomes execution.
+> Most second brains are write-only graveyards. You bookmark 500 things and read 12. Kairos doesn't make you a better searcher — it becomes a better interrupter. It learns that you never read long ML threads on back-to-back days but devour them Sunday morning at a coffee shop. It learns that "not now" on a ramen rec means "remind me when I'm near Chinatown with an hour free." Every night it rewrites the prompt it uses to describe your bookmarks, based on what you actually engaged with. The policy improves without you lifting a finger. Passive hoarding becomes execution.
 
 ---
 
@@ -288,3 +520,6 @@ Be explicit that real learning takes weeks; the simulator compresses it to 3 min
 - GEPA library: https://github.com/gepa-ai/gepa
 - Contextual bandits / LinUCB (Li et al., WWW 2010): https://arxiv.org/abs/1003.0146
 - Letta sleep-time compute (prior art to differentiate from): https://www.letta.com/blog/sleep-time-compute/
+- MongoDB Atlas Vector Search: https://www.mongodb.com/docs/atlas/atlas-vector-search/
+- FastMCP: https://github.com/jlowin/fastmcp
+- Claude Code scheduled tasks: https://code.claude.com/docs/en/scheduled-tasks
