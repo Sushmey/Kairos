@@ -29,14 +29,14 @@ Kairos is a **contextual bandit**: at each candidate moment, score bookmark clus
 ┌─────────────────────────────────────────────────────────────┐
 │                        INGEST LAYER                         │
 │  X API GET /2/users/{id}/bookmarks (paginated sync)         │
-│  → normalize → LLM enrichment → MongoDB + embeddings          │
-│  HDBSCAN clustering → cluster summaries                     │
+│  → normalize → LLM enrichment (Gemini flash-lite)           │
+│  → MongoDB + embeddings → HDBSCAN clustering                │
 │  (fallback: X data export for bootstrap without OAuth)      │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
 │                      CONTEXT SENSOR                         │
-│  Calendar (Google API) · Location toggle · Time             │
+│  Google Workspace MCP (list_events) · Location toggle       │
 │  Headspace = topical affinity vector + attention capacity   │
 └──────────────────────────┬──────────────────────────────────┘
                            │
@@ -49,16 +49,48 @@ Kairos is a **contextual bandit**: at each candidate moment, score bookmark clus
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
-│                      DELIVERY LAYER                         │
-│  HeartbeatService → persist notification → adapter fan-out  │
-│  web (SSE inbox) · MCP return (host transcript) · OS (opt)  │
+│              HeartbeatService (policy core)                 │
+│  read_context → evaluate_surface → save_notification        │
+│  → deliver (adapter fan-out) → HeartbeatResult              │
 └──────────────────────────┬──────────────────────────────────┘
                            │
-          ┌────────────────┴────────────────┐
-          ▼                                 ▼
-  BANDIT UPDATE (online)          GEPA PASS (nightly)
-  after every notification        re-enrich · tune prompts
-  updates timing policy           emits "what I learned" diff
+        ┌──────────────────┼──────────────────┐
+        ▼                  ▼                  ▼
+  WebDeliveryAdapter  OSDeliveryAdapter  HeartbeatResult
+  (→ EventBus SSE)   (terminal-notifier) (MCP/Antigravity
+                                          host transcript)
+        │
+        ▼
+  EventBus (in-process pub/sub)
+  → FastAPI SSE → web dashboard
+        │
+        └──────────────────────────────────────┐
+                                               ▼
+                                   ┌─────────────────────┐
+                                   │  SELF-IMPROVEMENT   │
+                                   │  BANDIT (online)    │
+                                   │  GEPA PASS (nightly)│
+                                   └─────────────────────┘
+```
+
+---
+
+## Runtime Paths
+
+There are two ways to invoke a heartbeat cycle. Both go through the same `HeartbeatService` policy core.
+
+**Direct path** (`kairos heartbeat`): calls `heartbeat_service.run()` directly. Fastest, used by Desktop scheduled task and Claude Code `/loop` MCP tool calls.
+
+**Agent path** (`kairos agent-cycle`): wraps the heartbeat in the Antigravity SDK agent harness. The Gemini model reasons over `run_heartbeat` tool call, then Antigravity hooks emit each tool call and turn to the EventBus. Used when natural-language reasoning over context is needed.
+
+```
+CLI / Claude Code /loop / FastMCP
+         │
+         ├── direct: heartbeat_service.run()
+         │
+         └── agent: Antigravity Agent → Gemini → tool calls → heartbeat_service
+                          │
+                          └── hooks: post_tool_call, post_turn → EventBus
 ```
 
 ---
@@ -82,18 +114,16 @@ The unit surfaced is a **topic cluster digest**, not an individual bookmark:
 └──────────────────────────────────────────────────┘
 ```
 
-Links within a digest are ranked by relevance to current context, not ingest order. Snooze applies to the whole cluster for this context window and re-queues it with the context snapshot stamped on it.
+Links within a digest are ranked by relevance to current context. Snooze applies to the whole cluster for this context window and re-queues it with the context snapshot stamped on it.
 
 ---
 
 ## Headspace: Two Dimensions
 
-"Headspace" decomposes into two orthogonal components that drive different parts of the ranking:
-
 **Topical affinity** — what are you mentally oriented toward?
-- Upcoming calendar event titles (embedded as intent signal)
+- Upcoming calendar event titles (embedded as intent signal) — via Google Workspace MCP `list_events`
 - Recent event titles (topic trail from what just ended)
-- Location type: office → work mode, cafe → exploratory, gym → nothing technical
+- Location type: desk → work mode, cafe → exploratory, gym → nothing technical
 - Post-meeting window: 15–30 min after a multi-person event, topics are primed
 
 **Attention capacity** — how much cognitive bandwidth is available?
@@ -102,34 +132,34 @@ Links within a digest are ranked by relevance to current context, not ingest ord
 - Minutes since last meeting (recovery window)
 - Surfaces already consumed today (fatigue proxy)
 
-Topical affinity determines **which cluster** to surface. Attention capacity determines **whether any cluster is feasible** (energy cost filter).
+Topical affinity → which cluster to surface. Attention capacity → whether any cluster is feasible.
 
 ---
 
 ## Data Models
 
-### MongoDB Collections
+All models in `src/kairos/models/schemas.py`. MongoDB collections:
 
-**`bookmarks`** — one document per bookmark, embedding stored inline
+### `bookmarks`
 
 ```python
 {
   "_id": ObjectId(),
   "x_tweet_id": str,                  # unique upsert key from X API
-  "url": str,                         # https://x.com/i/web/status/{x_tweet_id}
-  "raw_text": str,                    # note_tweet.text if present, else tweet.text
+  "url": str,
+  "raw_text": str,
   "author_id": str,
   "author_username": str,
-  "tweet_created_at": datetime,       # when the post was published (NOT bookmark time)
-  "context_annotations": list[dict], # X-inferred entities — seed for topic_tags
-  "referenced_tweets": list[dict],    # quoted/replied-to context (from expansions)
+  "tweet_created_at": datetime,
+  "context_annotations": list[dict],  # X-inferred entities — seed for topic_tags
+  "referenced_tweets": list[dict],    # quoted/replied-to context
   "embedding": list[float],           # 384-dim, sentence-transformers all-MiniLM-L6-v2
-  "cluster_id": ObjectId,             # assigned at ingest, updated nightly
-  "topic_tags": list[str],            # LLM-enriched
+  "cluster_id": ObjectId,
+  "topic_tags": list[str],            # from BookmarkEnrichment (Gemini flash-lite)
   "consumption_mode": str,            # read-deep | skim | watch | act-in-world | save-to-project
   "energy_cost": float,               # 0.0–1.0
-  "geo_anchor": str | None,           # extracted place/product name
-  "geo_coords": [float, float] | None,# [lat, lon]
+  "geo_anchor": str | None,
+  "geo_coords": [float, float] | None,
   "perishability": str,               # evergreen | dated | time-sensitive
   "ingested_at": datetime,
   "last_synced_at": datetime,
@@ -138,70 +168,68 @@ Topical affinity determines **which cluster** to surface. Attention capacity det
 }
 ```
 
-**`clusters`** — one document per topic cluster
+### `clusters`
 
 ```python
 {
   "_id": ObjectId(),
   "name": str,                        # LLM-generated label
-  "summary": str,                     # 2-sentence LLM summary, GEPA-tuned
-  "centroid_embedding": list[float],  # mean of member embeddings
+  "summary": str,                     # 2-sentence summary, GEPA-tuned
+  "centroid_embedding": list[float],
   "member_count": int,
   "last_updated": datetime,
 }
 ```
 
-**`notifications`** — one document per surface event (canonical, before feedback)
+### `notifications`
 
 ```python
 {
   "_id": ObjectId(),
-  "notification_id": str,           # uuid, client-facing
+  "notification_id": str,             # uuid, matches NotificationRecord
   "cluster_id": ObjectId,
-  "digest": dict,                   # ClusterDigest payload
+  "digest": dict,                     # ClusterDigest payload
   "context_snapshot": dict,
-  "status": str,                    # pending | snoozed | dismissed | acted | expired
+  "status": str,                      # pending | snoozed | dismissed | acted | expired
   "created_at": datetime,
   "expires_at": datetime | None,
-  "feedback_event_id": ObjectId | None,
 }
 ```
 
-**`feedback_events`** — one document per notification interaction
+### `feedback_events`
 
 ```python
 {
   "_id": ObjectId(),
   "notification_id": str,
   "cluster_id": ObjectId,
-  "context_snapshot": dict,           # full headspace vector at fire time
-  "notification_text": str,           # exact text shown (input to GEPA eval)
-  "links_shown": list[str],           # bookmark URLs in the digest
-  "events": [
+  "context_snapshot": dict,
+  "notification_text": str,           # exact rendered markdown (GEPA eval input)
+  "events": [                         # raw interaction sequence
     { "type": "shown",      "t": 0 },
     { "type": "expanded",   "t": 4 },
     { "type": "link_click", "t": 9,  "url": str },
     { "type": "dismissed",  "t": 61 },
   ],
-  "derived_reward": float,            # computed from event sequence
-  "snooze_context": dict | None,      # context snapshot if action was snooze
+  "derived_reward": float,
+  "snooze_context": dict | None,
   "created_at": datetime,
 }
 ```
 
-**`bandit_params`** — one document per cluster_class × context_class pair
+### `bandit_params`
 
 ```python
 {
-  "cluster_class": str,               # e.g. "distributed-systems"
-  "context_class": str,               # e.g. "pre-meeting:infra"
-  "alpha": float,                     # Thompson sampling beta distribution params
+  "cluster_class": str,
+  "context_class": str,
+  "alpha": float,                     # Thompson sampling beta distribution
   "beta": float,
   "last_updated": datetime,
 }
 ```
 
-**`optimization_runs`** — GEPA pass history
+### `optimization_runs`
 
 ```python
 {
@@ -210,48 +238,23 @@ Topical affinity determines **which cluster** to surface. Attention capacity det
   "prompt_after": str,
   "engagement_before": float,
   "engagement_after": float,
-  "diff_summary": str,                # "what I learned" — shown in dashboard
-}
-```
-
-### Context Feature Vector (live at decision time)
-
-```python
-{
-  # Topical affinity
-  "upcoming_event_title": str,
-  "upcoming_event_embedding": list[float],
-  "recent_event_title": str | None,
-  "post_meeting_minutes": int | None,  # time since last multi-person event ended
-  "location_type": str,                # desk | commute | gym | cafe | near_anchor | unknown
-
-  # Attention capacity
-  "calendar_gap_minutes": int,
-  "meeting_density_today": float,
-  "minutes_since_last_meeting": int,
-  "surfaces_today": int,
-  "time_since_last_surface_minutes": int,
-
-  # Time
-  "hour": int,
-  "day_of_week": int,
-  "is_weekend": bool,
+  "diff_summary": str,                # "what I learned" — closing demo slide
 }
 ```
 
 ---
 
-## Ranking Pipeline
+## Ranking Pipeline (`core/ranking.py`)
 
 ### Step 1 — Feasibility Filter
 
+MongoDB pre-filter before vector search:
 ```python
-# MongoDB query before any vector search
 { "energy_cost": { "$lte": available_capacity },
   "cluster_id": { "$nin": snoozed_cluster_ids } }
 ```
 
-### Step 2 — Topical Score (Atlas $vectorSearch)
+### Step 2 — Topical Score (Atlas `$vectorSearch`)
 
 ```python
 pipeline = [
@@ -270,7 +273,7 @@ pipeline = [
 
 ### Step 3 — Bandit Adjustment
 
-Thompson sample from `bandit_params` for each candidate cluster × current context class. Adjusted score = `vector_score × bandit_weight`. The bandit reshapes pure similarity with learned history — it's how "infra threads before architecture meetings" gets amplified over time.
+Thompson sample from `bandit_params` per cluster × context class. `adjusted_score = vector_score × bandit_weight`. Learned history reshapes pure similarity over time.
 
 ### Step 4 — Interrupt Gate
 
@@ -280,371 +283,275 @@ calendar_gap_minutes > energy_cost     ✓/✗
 time_since_last_surface > min_gap      ✓/✗
 adjusted_score > learned_threshold     ✓/✗
 
-All pass → surface digest
-Any fail → silence (re-evaluate at next context change)
+All pass → SurfaceDecision(should_surface=True)
+Any fail → SurfaceDecision(should_surface=False)  ← silence is the feature
 ```
 
-**Silence is the feature.**
+Gate reasons are included in `SurfaceDecision.gate_reasons` and emitted to the EventBus for the dashboard.
 
 ---
 
 ## Reward Function
 
-| Action | Reward | Rationale |
-|--------|--------|-----------|
-| `acted` (went to place, added to todo) | +1.0 | Passive → execution achieved |
-| `clicked ≥2 links` | +0.8 | Strong engagement |
-| `clicked 1 link + dwelled >30s` | +0.6 | Solid engagement |
-| `expanded digest` | +0.4 | Interest signal |
-| `dwelled >15s, no click` | +0.2 | Weak positive |
-| `snoozed` | 0.0 (re-queue) | Right thing, wrong time |
-| `dismissed` | −0.4 | Wrong thing |
-| `ignored` (expired without interaction) | −0.6 | Trained user to ignore |
+| Action | Reward | Notes |
+|--------|--------|-------|
+| `acted` | +1.0 | Passive → execution achieved |
+| `link_click` ×2+ | +0.8 | Strong engagement |
+| `link_click` + dwell >30s | +0.6 | Solid engagement |
+| `expanded` | +0.4 | Interest signal |
+| `expanded` only, no click | +0.2 | Weak positive |
+| `snoozed` | 0.0 (re-queue) | Right thing, wrong time — re-queue with context stamp |
+| `dismissed` | −0.4 | Wrong cluster |
+| `ignored` (expired) | −0.6 | Trained user to ignore |
 
-**Dwell time alone is insufficient.** A positive label requires at minimum `expanded` or `link_click` — high dwell with zero clicks is ambiguous and treated as neutral. This guards against Goodhart: the agent cannot game its reward by writing longer summaries.
-
-**Snooze is the most informative timing signal.** Re-queue with context snapshot stamped on it; the bandit learns "this cluster gets snoozed when meeting density > 0.7."
+Dwell alone is not a positive label — requires `expanded` or `link_click`. Guards against Goodhart: the agent cannot win by writing longer summaries.
 
 ---
 
 ## Two Self-Improvement Loops
 
-These are separate optimizers and must stay decoupled:
-
 ```
 feedback_event.derived_reward
         │
-        ├──► BANDIT UPDATE (online, after every event)
+        ├──► BANDIT UPDATE (online, after every feedback event)
         │    Updates: bandit_params alpha/beta for cluster × context pair
-        │    Effect: better timing — when to surface which cluster
+        │    Wire point: heartbeat_service.record_feedback() → TODO
         │
-        └──► GEPA OPTIMIZATION (offline, nightly)
-             Input: (cluster_content, context, notification_text) → reward
-             Updates: summary/rationale generation prompt
-             Effect: better framing — how the digest is written
-             Artifact: optimization_runs diff (the demo closing slide)
+        └──► GEPA OPTIMIZATION (offline, nightly via Cloud Routine → POST /optimize)
+             Input: (notification_text, context_snapshot) → derived_reward
+             Updates: summary/rationale generation prompt in generation.py
+             Artifact: optimization_runs doc → dashboard diff view
 ```
 
 ---
 
-## "Why Now" Rationale
+## Delivery Layer (`delivery/`)
 
-Every digest includes one line exposing the policy decision, generated by the GEPA-tuned prompt:
+`HeartbeatService` calls `deliver(result, notification, mode)` which fans out to configured adapters.
 
-> *"Dense read · 90-min gap · you usually absorb these Sunday morning at a coffee shop"*
+| Adapter | What it does | Config |
+|---------|-------------|--------|
+| `WebDeliveryAdapter` | Emits `notification` event to `EventBus` → SSE → dashboard inbox | `delivery_targets=web` |
+| `OSDeliveryAdapter` | `terminal-notifier` (macOS) or `notify-send` (Linux), best-effort | `os_delivery_enabled=true` |
+| `return_only` mode | No side effects — HeartbeatResult only (FastMCP callers) | `delivery=return_only` |
 
-This doubles as UX (transparency) and proof of learning (the rationale changes between sessions as the prompt evolves).
-
----
-
-## Calendar Pull Mode
-
-When an upcoming event title semantically matches a bookmark cluster (cosine similarity > 0.7), proactively assemble a dossier without waiting for the bandit to fire.
-
-Example: "Infra Architecture Review" → surfaces distributed-systems cluster 30 min before the event.
-
-This is a separate trigger path that bypasses the interrupt gate — calendar intent is high-confidence enough to always surface.
-
----
-
-## Geo-Anchoring
-
-At ingest: extract place/product mentions (LLM), resolve to coordinates (geopy). Geofence radius: 300m.
-
-Trigger: location enters geofence + calendar gap exists + energy budget available → surface geo-anchored cluster.
-
-Demo: manual "I am here" toggle. Continuous background GPS is an OS permissions swamp — skip it.
+`DeliveryHints` on the result tells MCP/Antigravity host agents:
+- `rendered_markdown`: pre-rendered digest for host transcript
+- `dashboard_url`: deep link to `GET /n/{notification_id}`
+- `suggested_host_actions`: e.g. "show rendered_markdown to user", "call record_feedback"
+- `suppress_ok_in_chat`: KAIROS_OK is silent — no chat spam when gate stays closed
 
 ---
 
 ## Interfaces
 
-**Principle:** policy core is channel-agnostic. Ranking and gating always produce a `HeartbeatResult` (`KAIROS_OK` | `SURFACE`). Delivery adapters fan out to whatever host is connected — web app, MCP coding agent, optional OS notify.
+### Web Dashboard (FastAPI + SSE)
 
-```
-Policy Core (HeartbeatService)
-        │
-        ├─ always persists → notifications collection
-        │
-        └─ adapter fan-out (configured per deployment)
-              ├─ web      → SSE + notification inbox
-              ├─ mcp_return → structured payload + rendered_markdown + host hints
-              └─ os       → terminal-notifier / notify-send (optional, platform-gated)
-```
-
-### Heartbeat response contract
-
-| Status | Meaning | User-visible (default) |
-|--------|---------|------------------------|
-| `KAIROS_OK` | Interrupt gate failed — silence | Hidden (`showOk: false`); logged in activity pane |
-| `SURFACE` | Digest approved | Shown via configured delivery targets |
-
-MCP host loop (Claude Code `/loop`):
-
-```
-Call kairos run_heartbeat
-  → KAIROS_OK: reply HEARTBEAT_OK, stay quiet
-  → SURFACE: print delivery.rendered_markdown in transcript;
-             optionally open delivery.dashboard_url;
-             ask user for feedback → record_feedback
-```
-
-### Web Dashboard (single page, two panes)
-
-Delivery target when `DELIVERY_TARGETS=web`. Also serves observability.
+Single page, two panes. `EventBus` is already wired — FastAPI SSE endpoint streams it to the browser.
 
 ```
 ┌─────────────────────────┬──────────────────────────────────┐
-│  NOTIFICATION INBOX     │   AGENT ACTIVITY (live via SSE)  │
-│  (delivery)             │   (heartbeat observability)      │
+│   UPCOMING / HISTORY    │   AGENT ACTIVITY (live via SSE)  │
 │                         │                                  │
-│  🔔 NEW 2:30pm          │  14:22 heartbeat tick            │
-│    Distributed Systems  │  14:22 gate: score ✗ → KAIROS_OK │
-│    [before your mtg]    │  14:27 → SURFACE published       │
-│  [Open] [Snooze] [✗]    │                                  │
-│  ✓ 11am — engaged       │  LAST GEPA PASS                  │
-│  ✗ 9am — dismissed      │  prompt diff v3→v4              │
+│  ● 2:30pm               │  14:22 scored 8 clusters         │
+│    Distributed Systems  │  14:22 infra-arch → 0.84 ✓       │
+│    [before your mtg]    │  14:22 gate: gap=42m ✓ budget ✓  │
+│                         │  14:22 → surfaced digest         │
+│  ✓ 11am — engaged       │                                  │
+│  ✗ 9am — dismissed      │  LAST SLEEP-TIME PASS            │
+│                         │  prompt diff (summary v3→v4):    │
+│  Engagement rate        │  - "Here are relevant threads"   │
+│  ████████░░ 74% (+12%)  │  + "Before {event}, these {n}…"  │
+│                         │  engagement: 61% → 74% ✓         │
+│  [Manage clusters]      │                                  │
+│  [Restraint budget: 3]  │                                  │
 └─────────────────────────┴──────────────────────────────────┘
 ```
 
-SSE event kinds on `GET /api/stream`:
-
-| kind | purpose |
-|------|---------|
-| `indicator` | heartbeat ran (`ok` / `alert` / `skipped`) |
-| `activity` | ranking steps, gate results |
-| `notification` | new digest for inbox |
-| `feedback` | user action recorded |
-| `optimization` | GEPA pass complete |
+`kairos serve` is a CLI stub — needs FastAPI app implementation.
 
 ### MCP Server (FastMCP)
 
-Two tool categories — query (any session) vs heartbeat (scheduled loop):
+Tools in `agent/tools.py` are already written as plain Python functions — dual-use for Antigravity harness and FastMCP. The MCP server is a thin wrapper exposing `ALL_TOOLS`.
 
 ```python
-# Query — on-demand context for coding agents
-@mcp.tool()
-def get_relevant_bookmarks(query: str, limit: int = 5) -> list[Bookmark]: ...
-
-@mcp.tool()
-def get_cluster_summary(topic: str) -> ClusterDigest: ...
-
-@mcp.tool()
-def add_bookmark(url: str, notes: str = "") -> Bookmark: ...
-
-# Heartbeat — periodic decision loop (Claude Code /loop, cron, manual)
-@mcp.tool()
-def run_heartbeat(
-    delivery: Literal["auto", "return_only", "none"] = "auto",
-    context_override: str | None = None,
-) -> HeartbeatResult:
-    """Returns KAIROS_OK or SURFACE + delivery.rendered_markdown + suggested_host_actions.
-    Host agent presents SURFACE in transcript using its native mechanisms."""
-
-@mcp.tool()
-def record_feedback(notification_id: str, action: str, url: str | None = None) -> dict:
-    """Capture feedback from any host (chat prompt, web inbox, etc.)."""
+# tools already exist:
+get_current_context()
+get_relevant_bookmarks(query, limit)
+get_cluster_summary(topic)
+run_heartbeat(delivery, context_override)
+record_feedback(notification_id, action, url)
+add_bookmark(url, notes)
 ```
 
-**Host agent responsibilities:** render `delivery.rendered_markdown` in chat; optionally invoke OS notify if user enabled it; call `record_feedback` after user responds. Kairos does not assume a specific IDE.
+Claude Code `/loop` calls `run_heartbeat` via MCP every 5 min during the demo. The session transcript IS the observability.
 
-**Hybrid:** MCP heartbeat persists notification → SSE pushes to open dashboard. Return includes `delivery.dashboard_url`. Host can say "check your Kairos dashboard" or show markdown inline.
+### Google Workspace MCP — Calendar Context (replaces manual Calendar API)
 
-### Delivery configuration
+The Google Workspace MCP server provides `list_events`, `get_event`, `suggest_time` and 5 more calendar tools over OAuth2. This replaces implementing `google-api-python-client` + credential flow manually in `context.py`.
 
-```yaml
-# env / kairos.yaml
-DELIVERY_TARGETS=web          # comma-separated: web, os
-WEB_BASE_URL=http://localhost:8420
-OS_DELIVERY_ENABLED=false     # opt-in; macOS terminal-notifier, Linux notify-send
-MCP_SUPPRESS_OK_IN_CHAT=true  # hide KAIROS_OK from host transcript
-```
+Wire into the Antigravity agent config as an MCP connector, then the agent calls `list_events` as a tool directly. The context sensor becomes: call `list_events` for today → parse gap, density, upcoming title → build `ContextSnapshot`.
+
+Auth: Google Cloud project → OAuth2 client ID + secret → authorized redirect URI. One-time setup, much lighter than implementing the Calendar API from scratch.
 
 ---
 
 ## Scheduling
 
+Custom scheduler eliminated. Three Claude Code mechanisms replace it:
+
 | Job | Mechanism | Interval |
 |-----|-----------|----------|
-| Heartbeat (demo) | Claude Code `/loop` → MCP `run_heartbeat` | 5 min |
-| Heartbeat (prod) | `POST /heartbeat` or `kairos heartbeat` via cron | 5 min |
-| Nightly GEPA pass | Cloud Routine → `POST /optimize` | Daily 2am |
-
-All heartbeat triggers call the same `HeartbeatService` — HTTP, CLI, MCP, and Antigravity harness are thin wrappers.
-
-During demo with MCP: Claude Code `/loop` calls `run_heartbeat`. SURFACE digests appear in the session transcript; activity also streams to the web dashboard if `kairos serve` is running. **Transcript OR inbox — both valid delivery surfaces.**
+| Context poll + heartbeat (demo) | Claude Code `/loop 5m` → MCP `run_heartbeat` | 5 min |
+| Context poll + heartbeat (prod) | Desktop Scheduled Task → `kairos heartbeat` | 5 min |
+| Nightly GEPA sleep-time pass | Cloud Routine → `POST /optimize` | Daily 2am |
 
 ---
 
 ## Stack
 
-| Component | Tool |
-|-----------|------|
-| Persistence | MongoDB Atlas (all collections) |
-| Vector search | Atlas `$vectorSearch` (inline with bookmark docs) |
-| Embeddings | `sentence-transformers` all-MiniLM-L6-v2 |
-| Clustering | HDBSCAN (natural topic boundaries, no fixed k) |
-| Bandit | Thompson sampling over logistic model (`scikit-learn`, ~50 lines custom) |
-| Prompt optimization | DSPy + GEPA |
-| API backend | FastAPI + SSE (`/api/stream`, `/heartbeat`) |
-| Scheduling | Claude Code `/loop` (demo) + HTTP/cron heartbeat (prod) + Cloud Routine (GEPA) |
-| Delivery | Adapter registry: web SSE, MCP return payload, optional OS notify |
-| MCP server | FastMCP (`run_heartbeat`, `record_feedback`, query tools) |
-| Calendar | Google Calendar API (OAuth2) |
-| Geo | `geopy` for geocoding, manual toggle for demo |
-| Bookmark ingest | X API v2 `GET /2/users/{id}/bookmarks` (OAuth2 user token) |
-| Bookmark bootstrap | X data export (fallback if OAuth/quota blocked) |
-| LLM | Gemini via Interactions API (`google-genai`) + Antigravity SDK harness |
+| Component | Tool | Status |
+|-----------|------|--------|
+| Persistence | MongoDB Atlas | config wired, collections TODO |
+| Vector search | Atlas `$vectorSearch` | TODO |
+| Embeddings | `sentence-transformers` all-MiniLM-L6-v2 | TODO |
+| Clustering | HDBSCAN | TODO |
+| Bandit | Thompson sampling (scikit-learn, ~50 lines) | TODO |
+| Prompt optimization | DSPy + GEPA | TODO |
+| LLM — enrichment | Gemini flash-lite via `google-genai` Interactions API | done (stub input) |
+| LLM — digest generation | Gemini flash via `google-genai` Interactions API | done (stub input) |
+| Agent harness | Antigravity SDK (`google-antigravity`) | done |
+| Observability | EventBus in-process pub/sub → SSE | done |
+| Delivery — web | WebDeliveryAdapter → EventBus | done |
+| Delivery — OS | OSDeliveryAdapter (terminal-notifier / notify-send) | done |
+| Calendar | Google Workspace MCP (`list_events`) | TODO |
+| Geo | `geopy` for geocoding, manual toggle for demo | TODO |
+| Ingest | X API `GET /2/users/{id}/bookmarks` | TODO |
+| API backend | FastAPI + SSE (`kairos serve`) | stub |
+| MCP server | FastMCP wrapping `ALL_TOOLS` | TODO |
+| Scheduling | Claude Code `/loop` + Desktop Task + Cloud Routine | TODO |
 
 ---
 
-## X Bookmark Ingest
+## X Bookmark Access — De-risk in Hour 1
 
-Primary source: **[X API Get Bookmarks](https://docs.x.com/x-api/users/get-bookmarks)** — returns Posts bookmarked by the authenticated user.
+X API bookmark endpoint: OAuth2 user-context, rate-limited, pricing volatile. Strategy:
+- Primary: live sync via `GET /2/users/{id}/bookmarks` with expansions (author, referenced tweets)
+- Bootstrap / fallback: X data export (Settings → Download an archive)
+- Demo: export is sufficient if API setup burns time
 
-### Endpoint
-
-```
-GET https://api.x.com/2/users/{id}/bookmarks
-```
-
-| Parameter | Value |
-|-----------|-------|
-| `id` (path) | Authenticated user's numeric ID — **must match the OAuth token holder** |
-| `max_results` | 1–100 per page (paginate until `meta.next_token` absent) |
-| `pagination_token` | Base36 token from prior response `meta.next_token` |
-
-**Required OAuth2 scopes:** `bookmark.read`, `tweet.read`, `users.read`
-
-Auth flow: OAuth 2.0 authorization code via `https://api.x.com/2/oauth2/authorize` → token at `https://api.x.com/2/oauth2/token`. Store refresh token with `offline.access` scope for background sync.
-
-### Recommended field/expansion set
-
-Request these to maximize ingest quality without extra round-trips:
-
-```
-tweet.fields=created_at,entities,note_tweet,context_annotations,referenced_tweets,lang,attachments
-expansions=author_id,referenced_tweets.id,attachments.media_keys
-user.fields=username,name
-```
-
-**Text extraction rules:**
-- Long posts: prefer `note_tweet.text` over truncated `text`
-- Thread/quote context: merge expanded `includes.tweets` for referenced posts into enrichment input
-- URLs: extract from `entities.urls[].expanded_url` (prefer over t.co shortlinks)
-- Topic hints: pass `context_annotations` to LLM enrichment as weak priors for `topic_tags`
-
-**Known API limitation:** the endpoint returns Tweet objects, not bookmark timestamps. We store `tweet_created_at` (post publish time) and `ingested_at` / `last_synced_at` (our sync time). Do not infer "when user bookmarked this."
-
-### Sync strategy
-
-```
-Initial sync (Hour 0–1):
-  paginate all pages → upsert by x_tweet_id → enrich + embed new docs only
-
-Incremental sync (scheduled, e.g. daily or pre-demo):
-  paginate from page 1 → upsert by x_tweet_id
-  skip enrichment if doc exists and raw_text unchanged
-  re-cluster nightly if member set changed
-
-Error handling:
-  UsageCapExceededProblem → fall back to export bootstrap, log clearly
-  ClientForbiddenProblem    → check app enrollment / tier
-  ResourceUnavailableProblem → tweet deleted/suspended; mark doc unavailable
-```
-
-Unique index: `{ x_tweet_id: 1 }` on `bookmarks`.
-
-### Fallback: data export
-
-If OAuth setup or quota blocks live sync during the hackathon window:
-
-- Settings → Your Account → Download an archive → parse `bookmark.js` / tweet objects
-- Same normalization → enrichment → embed pipeline; map export tweet IDs to `x_tweet_id`
-- Demo still works; live sync is the production path
-
-**Hour 1 checklist:**
-1. Register X developer app, enable OAuth 2.0 user context
-2. Confirm `bookmark.read` scope on token
-3. One authenticated call returns paginated bookmarks
-4. Log rate-limit headers; note tier cap before building sync loop
+**Verify API access before architecting around it.**
 
 ---
 
 ## Demo Strategy — No Real Feedback in 48h
 
-Real continual learning takes weeks. A 48h demo with no feedback curve is a dead demo.
+1. Seed **synthetic persona** with scripted preferences
+2. Simulate 2 weeks of `feedback_events` to populate MongoDB
+3. Show engagement-rate curve climbing (MongoDB aggregation → Chart.js)
+4. **One live adaptation on stage**: wrong-context surface → dismiss → bandit update → better surface
 
-1. Seed a **synthetic persona** with scripted preferences ("never reads long ML papers on back-to-back days, devours them Sunday at a cafe")
-2. Simulate 2 weeks of feedback events against that persona to populate `feedback_events`
-3. Show engagement-rate curve climbing, dismissal/snooze rate falling (MongoDB aggregation → Chart.js)
-4. **One live adaptation on stage**: surface a digest in the wrong context, hit dismiss, watch bandit update, surface a better one
-
-Be explicit that real learning takes weeks; the simulator compresses it to 3 minutes. Judges respect this.
+Be explicit: real learning takes weeks; the simulator compresses it to 3 minutes.
 
 ---
 
-## Build Order
+## What's Done vs. TODO
 
-### Hour 0–2: Foundation
-- [ ] MongoDB Atlas setup, collections + vector search index (`x_tweet_id` unique)
-- [ ] X OAuth2 user-context flow + `GET /2/users/{id}/bookmarks` paginated sync client
-- [ ] Normalize tweets → upsert `bookmarks` (note_tweet text, expansions, context_annotations)
-- [ ] Export-parser fallback if API quota/OAuth blocked
-- [ ] LLM enrichment (batch, async): topic_tags, consumption_mode, energy_cost, geo_anchor, perishability
-- [ ] HDBSCAN clustering → populate `clusters` collection
-- [ ] **Eval harness first**: fixed context×cluster pairs with ground-truth from synthetic persona
+### Done
+- `models/schemas.py` — all Pydantic models (ContextSnapshot, ClusterDigest, HeartbeatResult, etc.)
+- `observability/bus.py` — EventBus: async pub/sub, history, SSE stream
+- `core/heartbeat.py` — HeartbeatService orchestration, record_feedback stub
+- `core/ranking.py` — SurfaceDecision structure, gate logic stub
+- `core/context.py` — ContextSnapshot builder stub
+- `core/notifications.py` — in-memory notification store (MongoDB TODO)
+- `delivery/base.py` — DeliveryAdapter protocol
+- `delivery/registry.py` — adapter registry, resolve_adapters
+- `delivery/web.py` — WebDeliveryAdapter → EventBus
+- `delivery/os.py` — OSDeliveryAdapter (terminal-notifier + notify-send)
+- `delivery/render.py` — digest_to_markdown, build_delivery_hints, ok_reason
+- `llm/client.py` — shared genai.Client singleton
+- `llm/generation.py` — enrich_bookmark + generate_cluster_digest (Interactions API, structured output)
+- `agent/prompts.py` — SYSTEM_INSTRUCTIONS, DECISION_TURN_PROMPT
+- `agent/hooks.py` — post_tool_call + post_turn → EventBus
+- `agent/config.py` — LocalAgentConfig factory (tools, hooks, response_schema=HeartbeatResult)
+- `agent/tools.py` — ALL_TOOLS: 6 dual-use functions (Antigravity + FastMCP)
+- `agent/harness.py` — run_decision_cycle (direct) + run_decision_cycle_via_agent (Antigravity)
+- `cli.py` — heartbeat / cycle / agent-cycle / chat / serve commands
+- `config.py` — pydantic-settings: Gemini, MongoDB, delivery, budget, intervals
 
-### Hour 2–5: Context + Ranking
-- [ ] Context sensor: Google Calendar poller, time features, post-meeting window detection
-- [ ] `$vectorSearch` ranking pipeline (steps 1–2)
-- [ ] Thompson sampling bandit (steps 3–4)
-- [ ] Interrupt gate + restraint budget
+### TODO (build order)
+1. **MongoDB wiring** — motor async client, upsert to all collections, swap in-memory store
+2. **X API ingest** — `GET /2/users/{id}/bookmarks`, normalize, call `enrich_bookmark`, upsert
+3. **Embeddings + clustering** — sentence-transformers on ingest, HDBSCAN nightly, update clusters collection
+4. **Atlas `$vectorSearch`** — wire ranking.py steps 1–2
+5. **Thompson sampling bandit** — wire ranking.py step 3, bandit_params online update in record_feedback
+6. **Google Workspace MCP** — calendar connector in agent config, parse into ContextSnapshot in context.py
+7. **FastAPI web server** — `kairos serve`: SSE endpoint streaming EventBus, notification inbox, metrics
+8. **FastMCP server** — thin wrapper over ALL_TOOLS, wire into Claude Code MCP
+9. **GEPA optimization loop** — POST /optimize endpoint, DSPy + GEPA over feedback_events eval set
+10. **Synthetic persona + simulator** — seed feedback_events for demo curve
+11. **Claude Code `/loop` wiring** — MCP connected, loop prompt tested
 
-### Hour 5–8: Delivery + Feedback
-- [ ] `HeartbeatService` wired to ranking pipeline (replace stubs)
-- [ ] FastAPI gateway: `POST /heartbeat`, `GET /api/stream`, notification inbox API
-- [ ] Web inbox UI with snooze/dismiss → `record_feedback`
-- [ ] FastMCP server: `run_heartbeat`, `record_feedback`, query tools
-- [ ] Claude Code `/loop` prompt wired to MCP heartbeat
-- [ ] Optional OS adapter (`OS_DELIVERY_ENABLED=true`)
-- [ ] `feedback_events` write + `derived_reward` computation
-- [ ] Snooze re-queue with context snapshot
-- [ ] Geo-anchor extraction + geofence trigger
-- [ ] Calendar pull mode (event title → cluster dossier)
+---
 
-### Hour 8–12: Self-Improvement Loops
-- [ ] Bandit online update (alpha/beta on `bandit_params` after each event)
-- [ ] GEPA loop on summary/rationale prompt against feedback-labeled eval set
-- [ ] `optimization_runs` write with prompt diff
-- [ ] `POST /optimize` endpoint for Cloud Routine trigger
+## Build Order (Hackathon Sequencing)
 
-### Hour 12–18: Interfaces
-- [ ] Web dashboard polish: engagement chart, prompt diff view, restraint budget controls
-- [ ] Web Push (stretch) for background browser notifications
+### Hour 0–2: MongoDB + Ingest
+- [ ] Motor async client, connection from `MONGODB_URI`
+- [ ] Swap `core/notifications.py` in-memory store → MongoDB upsert
+- [ ] X API ingest: paginated `GET /2/users/{id}/bookmarks`, normalize to bookmark schema
+- [ ] Call `enrich_bookmark` per bookmark, upsert to `bookmarks` collection
+- [ ] **Eval harness**: fixed context×cluster pairs with synthetic ground truth
 
-### Hour 18–24: Simulator + Demo Prep
-- [ ] Synthetic persona + feedback event simulator
-- [ ] MongoDB aggregation for metrics (engagement rate, dismissal rate, session-over-session)
+### Hour 2–5: Embeddings + Ranking
+- [ ] sentence-transformers embed at ingest, store on bookmark doc
+- [ ] HDBSCAN cluster, upsert `clusters` collection + centroid embeddings
+- [ ] Atlas `$vectorSearch` index on `bookmarks.embedding`
+- [ ] Wire ranking.py steps 1–2 (feasibility filter + vector search)
+- [ ] Thompson sampling bandit in ranking.py step 3, gate step 4
+
+### Hour 5–8: Calendar + Context
+- [ ] Google Workspace MCP connector in `agent/config.py`
+- [ ] `context.py`: call `list_events` tool → parse gap, density, upcoming title → ContextSnapshot
+- [ ] Location toggle (manual enum, geofence stretch)
+- [ ] Wire `record_feedback` → write `feedback_events` + bandit online update
+
+### Hour 8–12: Delivery + FastAPI
+- [ ] FastAPI app: `GET /events` SSE from EventBus, `GET /notifications`, `POST /feedback`
+- [ ] `GET /n/{notification_id}` — notification deep-link for DeliveryHints dashboard_url
+- [ ] Two-pane dashboard HTML (SSE stream → activity log, notification history)
+- [ ] Chart.js engagement rate chart from MongoDB aggregation
+
+### Hour 12–18: MCP + GEPA
+- [ ] FastMCP server wrapping ALL_TOOLS, add to Claude Code MCP config
+- [ ] Claude Code `/loop 5m` prompt wired to MCP `run_heartbeat`
+- [ ] `POST /optimize` endpoint: DSPy + GEPA over feedback_events eval set
+- [ ] Cloud Routine calling `/optimize` nightly
+- [ ] `optimization_runs` write + diff view in dashboard
+
+### Hour 18–24: Demo Prep
+- [ ] Synthetic persona + feedback simulator (2 weeks of events)
+- [ ] MongoDB aggregation for engagement chart
 - [ ] Demo script + stage choreography
 - [ ] "What I learned" diff as closing slide
 
 ### Hour 24–36: Polish
-- [ ] Restraint budget learning from feedback
-- [ ] "Why now" rationale tuned by GEPA
-- [ ] Desktop Scheduled Task setup for production path
+- [ ] Restraint budget learning from feedback history
+- [ ] Calendar pull mode (event title → cluster dossier, bypasses gate)
+- [ ] Geo-anchor extraction at ingest + geofence trigger
 
-### Hour 36–48: Buffer / Stretch
-- [ ] Incremental X bookmark sync on schedule (refresh token, skip unchanged)
+### Hour 36–48: Stretch
+- [ ] Live X API sync (paginated polling)
+- [ ] Real geofence (GPS toggle)
 - [ ] Additional sources (Pocket, Readwise export)
 
 ---
 
 ## Three Things Before Anyone Else Starts
 
-1. **Eval harness before the bandit.** No yardstick = no demo. Self-generated evals are also a self-improvement-stack flex in the pitch.
-2. **Snooze capture in hour 3, not hour 30.** Right-thing-wrong-time is the most informative timing signal and the one every other team misses.
-3. **Make learning visible.** The session-to-session prompt diff is worth more on stage than any accuracy number. Show the machine editing itself.
+1. **Eval harness before the bandit.** No yardstick = no demo. Build the fixed test set from the synthetic persona in hour 1.
+2. **Snooze capture before hour 3.** Right-thing-wrong-time is the most informative timing label. Every other team will miss it.
+3. **Make learning visible.** The optimization_runs prompt diff — rendered in the dashboard — is worth more on stage than any accuracy number. Show the machine editing itself.
 
 ---
 
@@ -660,8 +567,7 @@ Be explicit that real learning takes weeks; the simulator compresses it to 3 min
 - GEPA in DSPy: https://dspy.ai/api/optimizers/GEPA/overview/
 - GEPA library: https://github.com/gepa-ai/gepa
 - Contextual bandits / LinUCB (Li et al., WWW 2010): https://arxiv.org/abs/1003.0146
-- Letta sleep-time compute (prior art to differentiate from): https://www.letta.com/blog/sleep-time-compute/
+- Letta sleep-time compute (prior art): https://www.letta.com/blog/sleep-time-compute/
 - MongoDB Atlas Vector Search: https://www.mongodb.com/docs/atlas/atlas-vector-search/
-- FastMCP: https://github.com/jlowin/fastmcp
+- Google Workspace MCP: https://developers.google.com/workspace/guides/configure-mcp-servers
 - Claude Code scheduled tasks: https://code.claude.com/docs/en/scheduled-tasks
-- X API Get Bookmarks: https://docs.x.com/x-api/users/get-bookmarks

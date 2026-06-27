@@ -8,7 +8,7 @@ opencode.json
 .cursor
 
 # Virtual environments
-kairos/
+/kairos/
 .venv/
 venv/
 env/
