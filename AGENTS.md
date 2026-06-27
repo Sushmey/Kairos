@@ -18,4 +18,4 @@
 - Python package lives under `src/kairos`, packaged with hatch; dependencies managed with `uv`.
 - Data store is MongoDB (bookmarks, clusters, notifications, feedback_events); vector search drives ranking.
 - Web gateway pattern: FastAPI + SSE (`/api/stream`, `POST /heartbeat`) with an inbox UI; OpenClaw-style heartbeat ack for silence.
-- After each PLAN build-order phase, run adversarial judge skill (`.cursor/skills/kairos-adversarial-judge/`) and update `docs/demo-readiness/` (FAQ, PHASE_REVIEWS, DEMO_SCRIPT_GAPS).
+- After each PLAN build-order phase, run adversarial judge skill (`.cursor/skills/kairos-adversarial-judge/`) and hackathon theme auditor (`.cursor/skills/kairos-hackathon-themes/`); update `docs/demo-readiness/` (FAQ, PHASE_REVIEWS, DEMO_SCRIPT_GAPS, THEME_LOG).

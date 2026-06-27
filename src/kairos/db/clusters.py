@@ -25,6 +25,10 @@ async def replace_all_clusters(clusters: list[dict[str, Any]]) -> int:
     return len(clusters)
 
 
+async def get_cluster_by_id(cluster_id: str) -> dict[str, Any] | None:
+    return await get_database()[COLLECTION].find_one({"cluster_id": cluster_id})
+
+
 async def list_clusters(*, limit: int = 50) -> list[dict[str, Any]]:
     cursor = (
         get_database()[COLLECTION]

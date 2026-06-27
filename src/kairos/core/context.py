@@ -11,7 +11,8 @@ def read_context() -> ContextSnapshot:
         calendar_gap_minutes=90,
         meeting_density_today=0.3,
         location_type="cafe",
-        surfaces_today=1,
+        surfaces_today=0,
+        time_since_last_surface_minutes=120,
     )
     event_bus.emit("context", "Read current headspace", context=ctx.model_dump())
     return ctx

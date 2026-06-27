@@ -15,10 +15,16 @@ from kairos.observability.bus import event_bus
 logger = logging.getLogger(__name__)
 
 
-async def run_decision_cycle(delivery: DeliveryMode = "auto") -> HeartbeatResult:
+async def run_decision_cycle(
+    delivery: DeliveryMode = "auto",
+    context_override: str | None = None,
+) -> HeartbeatResult:
     """Execute one heartbeat via policy core (direct path, no Antigravity loop)."""
     event_bus.emit("session", "Starting heartbeat")
-    result = await heartbeat_service.run(delivery=delivery)
+    result = await heartbeat_service.run(
+        delivery=delivery,
+        context_override=context_override,
+    )
     event_bus.emit("session", "Heartbeat complete", status=result.status)
     return result
 

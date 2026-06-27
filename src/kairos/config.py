@@ -46,6 +46,9 @@ class Settings(BaseSettings):
 
     daily_surface_budget: int = 3
     min_gap_between_surfaces_minutes: int = 45
+    surface_score_threshold: float = 0.12
+    min_calendar_gap_minutes: int = 30
+    snooze_ttl_minutes: int = 120
 
     # Delivery adapters (comma-separated: web, os)
     delivery_targets: str = "web"

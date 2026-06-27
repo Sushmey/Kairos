@@ -42,13 +42,16 @@ A: ✅ Gemini flash-lite via Interactions API; `kairos bookmarks enrich` with pa
 A: ✅ **99/99 embedded**, **2 clusters** persisted (58 bookmarks assigned, 41 HDBSCAN noise). Default embed: `gemini-embedding-001@768` via API; local `bge-small-en-v1.5` optional (`EMBEDDING_BACKEND=local`).
 
 **Q: Can heartbeat surface a cluster?**  
-A: ❌ Not yet. `ranking.py` is a stub — heartbeat always returns `KAIROS_OK` with `score_threshold: false`.
+A: ✅ `kairos heartbeat --delivery return_only` → `SURFACE` with cluster digest, `why_now`, bookmark links, and optional Google Search grounding.
 
 **Q: Does the bandit learn?**  
-A: 🚧 Designed (Thompson sampling, `bandit_params` α/β). `record_feedback` and ranking step 3 are stubs.
+A: ✅ `kairos feedback --action dismissed` writes `feedback_events` and updates `bandit_params` α/β (e.g. β += 0.4 on dismiss). Thompson sampling reads updated weights on next heartbeat.
+
+**Q: Snooze vs dismiss?**  
+A: Snooze = right cluster, wrong time — no β penalty; cluster excluded from ranking for 120min in same context class. Dismiss = wrong cluster — β increases, surface weight drops.
 
 **Q: Can I see the web dashboard?**  
-A: 🚧 EventBus exists; `kairos serve` is a stub.
+A: ✅ `uv run kairos serve` → inbox at `http://127.0.0.1:8420`. Snooze/dismiss POST to `/api/feedback`. Admin mode shows SSE activity feed + bandit α/β. 🚧 Sidebar context/clusters/sparkline still mock data.
 
 **Q: GEPA / nightly self-improvement?**  
 A: ❌ Planned second loop; digest prompt optimization not wired.
@@ -77,13 +80,29 @@ A: HDBSCAN with `min_cluster_size=3`; dense topics merge (51-member "software-en
 
 ---
 
+## Hackathon themes
+
+**Q: How is this Continual Learning without fine-tuning the LLM?**  
+A: ✅ Online contextual bandit — dismiss/snooze/click update α/β in `bandit_params`; Thompson sampling on next heartbeat. No gradient steps on Gemini.
+
+**Q: What's the Self-Improvement Stack?**  
+A: ✅ `feedback_events` + `bandit_params` + notifications in MongoDB; EventBus → SSE `/api/stream` + admin activity feed. 🚧 Eval harness + GEPA + engagement chart still P7. ⚠️ GEPA panel in HTML is mock — do not claim shipped.
+
+**Q: Is this Recursive Intelligence / weight RSI?**  
+A: Honest scope: prompt-level self-improvement via GEPA (P7), not model weight training. Bandit is policy RSI at the application layer.
+
+**Q: Where is theme status tracked?**  
+A: `docs/demo-readiness/THEME_LOG.md` — updated each phase via `.cursor/skills/kairos-hackathon-themes/`.
+
+---
+
 ## Demo script anchors
 
 **Q: Minimum viable demo path?**  
-A: (1) ✅ Show enriched bookmarks + clusters (`kairos bookmarks clusters`). (2) Heartbeat → gate → surface OR KAIROS_OK. (3) Feedback → bandit update → different outcome. Step 2–3 need P4 wiring.
+A: **Browser:** (1) `uv run kairos serve`. (2) `uv run kairos heartbeat` or `POST /api/heartbeat`. (3) Dismiss in inbox. (4) Admin mode → SSE + bandit panel. **CLI fallback:** `bookmarks clusters` → heartbeat → feedback → second heartbeat.
 
 **Q: Best "learning visible" moment?**  
-A: `optimization_runs` prompt diff or bandit α/β shift after dismiss — whichever is wired first.
+A: Admin mode after dismiss — bandit β ticks up (`GET /api/bandit`) and SSE `feedback` event. CLI: `kairos feedback` JSON. GEPA prompt diff is P7.
 
 **Q: What to show if live heartbeat fails?**  
 A: Pre-recorded terminal: `bookmarks clusters` + MongoDB cluster doc + one planned `feedback_events` α/β update.
@@ -92,7 +111,10 @@ A: Pre-recorded terminal: `bookmarks clusters` + MongoDB cluster doc + one plann
 
 ## Stale / open
 
-- [x] Update when embeddings land (P3 — 2025-06-27)
-- [ ] Update when first live bandit update ships
-- [ ] Update when first `SURFACE` heartbeat with real cluster ships
+- [x] Update when embeddings land (P3)
+- [x] Update when first SURFACE heartbeat ships (P4)
+- [x] Update when first bandit update ships (P5)
+- [x] Update when `kairos serve` ships (P6)
 - [ ] Add rehearsal timestamps after first run-through
+- [ ] Update when GEPA / optimization_runs lands (P7)
+- [ ] Wire or hide mock sidebar widgets (context, clusters, GEPA panel)

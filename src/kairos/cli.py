@@ -20,13 +20,28 @@ def main() -> None:
         choices=["auto", "return_only", "none"],
         default="auto",
     )
+    heartbeat.add_argument(
+        "--context-override",
+        default=None,
+        help="Free-text headspace hint for ranking (demo override)",
+    )
 
     sub.add_parser("cycle", help="Alias for heartbeat")
+    feedback_parser = sub.add_parser("feedback", help="Record feedback on a surfaced notification")
+    feedback_parser.add_argument("notification_id", help="Notification UUID from SURFACE heartbeat")
+    feedback_parser.add_argument(
+        "--action",
+        required=True,
+        choices=["expanded", "link_click", "snoozed", "dismissed", "acted", "ignored"],
+    )
+    feedback_parser.add_argument("--url", default=None, help="Link URL for link_click")
     agent_cycle = sub.add_parser("agent-cycle", help="Run heartbeat via Antigravity agent")
     sub.add_parser("chat", help="Interactive agent turn").add_argument(
         "prompt", nargs="?", default="Run one heartbeat cycle."
     )
-    sub.add_parser("serve", help="Start web gateway (stub)")
+    serve_parser = sub.add_parser("serve", help="Start web gateway (FastAPI + SSE)")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=None)
 
     x_cmd = sub.add_parser("x", help="X API utilities")
     x_sub = x_cmd.add_subparsers(dest="x_command", required=True)
@@ -203,8 +218,24 @@ def main() -> None:
         from kairos.agent.harness import run_decision_cycle
 
         delivery = getattr(args, "delivery", "auto")
-        result = asyncio.run(run_decision_cycle(delivery=delivery))
+        context_override = getattr(args, "context_override", None)
+        result = asyncio.run(
+            run_decision_cycle(delivery=delivery, context_override=context_override)
+        )
         print(json.dumps(result.model_dump(), indent=2, default=str))
+    elif args.command == "feedback":
+        from kairos.core.heartbeat import heartbeat_service
+
+        result = asyncio.run(
+            heartbeat_service.record_feedback(
+                args.notification_id,
+                args.action,
+                url=args.url,
+            )
+        )
+        print(json.dumps(result, indent=2, default=str))
+        if result.get("status") != "ok":
+            sys.exit(1)
     elif args.command == "agent-cycle":
         from kairos.agent.harness import run_decision_cycle_via_agent
 
@@ -216,8 +247,15 @@ def main() -> None:
         text = asyncio.run(run_interactive(args.prompt))
         print(text)
     elif args.command == "serve":
-        print("Web gateway not yet implemented — use event_bus SSE stub for now.")
-        sys.exit(1)
+        from kairos.config import settings
+        from kairos.web.server import run_server
+
+        port = args.port
+        if port is None:
+            base = settings.web_base_url.rstrip("/")
+            port = int(base.rsplit(":", 1)[-1]) if ":" in base else 8420
+        print(f"Kairos dashboard → http://{args.host}:{port}")
+        run_server(host=args.host, port=port)
     elif args.command == "x":
         if args.x_command == "whoami":
             if args.write_env:

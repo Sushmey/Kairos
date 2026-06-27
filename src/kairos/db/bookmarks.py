@@ -59,6 +59,21 @@ async def list_bookmarks(
     return await cursor.to_list(length=limit)
 
 
+async def list_bookmarks_by_cluster(
+    cluster_id: str,
+    *,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Return bookmarks assigned to a cluster."""
+    cursor = (
+        get_database()[COLLECTION]
+        .find({"cluster_id": cluster_id})
+        .sort([("ingested_at", -1)])
+        .limit(limit)
+    )
+    return await cursor.to_list(length=limit)
+
+
 async def list_all_bookmarks(*, limit: int | None = None) -> list[dict[str, Any]]:
     """Return all bookmarks, optionally capped."""
     cursor = get_database()[COLLECTION].find({}).sort([("ingested_at", -1)])

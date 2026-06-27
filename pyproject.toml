@@ -16,6 +16,8 @@ dependencies = [
     "sentence-transformers>=3.0",
     "hdbscan>=0.8",
     "numpy>=1.26",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
 ]
 
 [project.scripts]
@@ -30,6 +32,9 @@ dev-mode-dirs = ["src"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kairos"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/kairos/web/static" = "kairos/web/static"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/kairos"]

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from kairos.core.context import read_context
-from kairos.core.notifications import get_notification, save_notification
+from kairos.core.feedback import process_feedback
 from kairos.core.ranking import evaluate_surface
+from kairos.db.notifications import save_notification
 from kairos.delivery.registry import deliver
 from kairos.delivery.render import build_delivery_hints, ok_reason
 from kairos.models.schemas import DeliveryMode, FeedbackAction, HeartbeatResult
@@ -22,7 +23,7 @@ class HeartbeatService:
         activity: list[str] = ["heartbeat tick"]
 
         context = read_context()
-        decision = evaluate_surface(context, context_override)
+        decision = await evaluate_surface(context, context_override)
         activity.append(
             f"gate: should_surface={decision.should_surface}"
             + (f" score={decision.adjusted_score:.2f}" if decision.adjusted_score else "")
@@ -38,7 +39,7 @@ class HeartbeatService:
                 reason=reason,
             )
 
-        notification = save_notification(decision)
+        notification = await save_notification(decision)
         activity.append(f"surfaced notification {notification.notification_id}")
 
         result = HeartbeatResult(
@@ -54,29 +55,24 @@ class HeartbeatService:
         event_bus.emit("indicator", "SURFACE", status="alert")
         return result
 
-    def record_feedback(self, notification_id: str, action: FeedbackAction) -> dict:
-        """Capture host-reported feedback. Stub until feedback_events collection."""
-        record = get_notification(notification_id)
-        if record is None:
-            return {"status": "error", "message": f"unknown notification {notification_id}"}
-
-        if action == "snoozed":
-            record.status = "snoozed"
-        elif action == "dismissed":
-            record.status = "dismissed"
-        elif action in ("expanded", "link_click", "acted"):
-            record.status = "acted"
-        elif action == "ignored":
-            record.status = "expired"
-
-        event_bus.emit(
-            "feedback",
-            f"Feedback recorded: {action}",
-            notification_id=notification_id,
-            action=action,
-        )
-        # TODO: write feedback_events + bandit online update
-        return {"status": "ok", "notification_id": notification_id, "action": action}
+    async def record_feedback(
+        self,
+        notification_id: str,
+        action: FeedbackAction,
+        *,
+        url: str | None = None,
+    ) -> dict:
+        """Capture host-reported feedback → feedback_events + bandit update."""
+        result = await process_feedback(notification_id, action, url=url)
+        if result.get("status") == "ok":
+            event_bus.emit(
+                "feedback",
+                f"Feedback recorded: {action}",
+                notification_id=notification_id,
+                action=action,
+                bandit=result.get("bandit"),
+            )
+        return result
 
 
 heartbeat_service = HeartbeatService()

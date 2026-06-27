@@ -7,6 +7,9 @@ from typing import Any
 
 from kairos.core.context import read_context
 from kairos.core.heartbeat import heartbeat_service
+from kairos.db.clusters import list_clusters
+from kairos.db.mongo import close_mongo
+from kairos.embeddings.encoder import encode_query
 from kairos.models.schemas import DeliveryMode, FeedbackAction
 from kairos.observability.bus import event_bus
 
@@ -34,15 +37,47 @@ def get_relevant_bookmarks(query: str, limit: int = 5) -> list[dict[str, Any]]:
     return []
 
 
+async def _cluster_for_topic(topic: str) -> dict[str, Any] | None:
+    from kairos.core.ranking import _cosine
+
+    clusters = await list_clusters()
+    clusters = [c for c in clusters if c.get("centroid_embedding")]
+    if not clusters:
+        return None
+    vector = encode_query(topic)
+    best: dict[str, Any] | None = None
+    best_score = -1.0
+    for cluster in clusters:
+        score = _cosine(vector, cluster["centroid_embedding"])
+        if score > best_score:
+            best_score = score
+            best = cluster
+    return best
+
+
 def get_cluster_summary(topic: str) -> dict[str, Any] | None:
     """Return the cluster closest to topic with its generated summary.
 
     Args:
         topic: Topic label or natural language description.
     """
-    # TODO: wire clusters collection
-    event_bus.emit("cluster", f"Lookup cluster for {topic!r}", topic=topic)
-    return None
+    async def _run() -> dict[str, Any] | None:
+        try:
+            cluster = await _cluster_for_topic(topic)
+            if not cluster:
+                return None
+            return {
+                "cluster_id": cluster.get("cluster_id"),
+                "name": cluster.get("name"),
+                "summary": cluster.get("summary"),
+                "member_count": cluster.get("member_count"),
+            }
+        finally:
+            await close_mongo()
+
+    result = asyncio.run(_run())
+    event_bus.emit("cluster", f"Lookup cluster for {topic!r}", topic=topic, found=bool(result))
+    return result
 
 
 def run_heartbeat(
@@ -78,15 +113,18 @@ def record_feedback(
     action: FeedbackAction,
     url: str | None = None,
 ) -> dict[str, str]:
-    """Record user feedback on a surfaced digest (any host: web, MCP chat, etc.).
+    """Record user feedback on a surfaced digest (any host: web, MCP chat, etc.)."""
+    return asyncio.run(
+        heartbeat_service.record_feedback(notification_id, action, url=url)
+    )
 
-    Args:
-        notification_id: ID from run_heartbeat SURFACE response.
-        action: expanded, link_click, snoozed, dismissed, acted, or ignored.
-        url: Optional link URL when action is link_click.
-    """
-    del url  # TODO: pass through to feedback_events
-    return heartbeat_service.record_feedback(notification_id, action)
+
+async def record_feedback_async(
+    notification_id: str,
+    action: FeedbackAction,
+    url: str | None = None,
+) -> dict:
+    return await heartbeat_service.record_feedback(notification_id, action, url=url)
 
 
 def add_bookmark(url: str, notes: str = "") -> dict[str, str]:

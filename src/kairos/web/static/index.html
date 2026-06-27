@@ -168,7 +168,9 @@
             <template x-for="link in active.links" :key="link.label">
               <li class="flex items-start justify-between gap-4">
                 <a
-                  href="#"
+                  :href="link.url || '#'"
+                  target="_blank"
+                  rel="noopener noreferrer"
                   class="text-sm font-medium text-[#111] hover:text-[#C4922A] underline-offset-2 hover:underline transition-colors"
                   x-text="link.label"
                 ></a>
@@ -499,24 +501,14 @@
         },
 
         active: {
-          id: 'n_001',
-          cluster: 'Distributed Systems',
-          memberCount: 8,
-          whyNow: 'Before your 3pm infra architecture review.',
-          links: [
-            { label: 'CAP theorem + modern tradeoffs',    mode: 'dense read', time: '12 min' },
-            { label: 'Kafka vs Redpanda — full thread',   mode: 'skim',       time: '3 min'  },
-            { label: 'Jepsen results for Postgres 16',    mode: 'reference',  time: null      },
-            { label: 'Consistent hashing from scratch',   mode: 'skim',       time: '5 min'  },
-          ],
+          id: '',
+          cluster: 'Waiting for Kairos…',
+          memberCount: 0,
+          whyNow: 'Run a heartbeat or wait for the next decision cycle.',
+          links: [],
         },
 
-        history: [
-          { time: '11:04am',   cluster: 'AI Security',     status: 'engaged'   },
-          { time: '9:12am',    cluster: 'System Design',   status: 'dismissed' },
-          { time: 'Yesterday', cluster: 'ML Papers',       status: 'snoozed'   },
-          { time: 'Yesterday', cluster: 'Distributed Sys', status: 'engaged'   },
-        ],
+        history: [],
 
         clusters: [
           { name: 'Distributed Systems', count: '8'  },
@@ -587,24 +579,142 @@
         },
 
         snooze(id) {
-          // TODO: POST /feedback { notification_id: id, action: 'snoozed' }
-          console.log('[kairos] snooze', id);
+          if (!id) return;
+          fetch('/api/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ notification_id: id, action: 'snoozed' }),
+          }).then(() => this.refreshNotifications());
         },
 
         dismiss(id) {
-          // TODO: POST /feedback { notification_id: id, action: 'dismissed' }
-          console.log('[kairos] dismiss', id);
+          if (!id) return;
+          fetch('/api/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ notification_id: id, action: 'dismissed' }),
+          }).then(() => this.refreshNotifications());
+        },
+
+        applyNotification(n) {
+          if (!n || !n.digest) return;
+          const d = n.digest;
+          this.active = {
+            id: n.notification_id,
+            cluster: d.cluster_name || 'Cluster',
+            memberCount: d.member_count || 0,
+            whyNow: d.why_now || '',
+            links: (d.links || []).map(l => ({
+              label: l.label || l.url || 'link',
+              url: l.url,
+              mode: l.consumption_mode || '',
+              time: '',
+            })),
+          };
+        },
+
+        formatTime(iso) {
+          if (!iso) return '';
+          const dt = new Date(iso);
+          return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        },
+
+        refreshNotifications() {
+          fetch('/api/notifications?limit=10')
+            .then(r => r.json())
+            .then(items => {
+              if (!items.length) return;
+              const pending = items.find(n => n.status === 'pending') || items[0];
+              this.applyNotification(pending);
+              this.history = items
+                .filter(n => n.notification_id !== pending.notification_id)
+                .slice(0, 6)
+                .map(n => ({
+                  time: this.formatTime(n.created_at),
+                  cluster: n.digest?.cluster_name || n.cluster_id?.slice(0, 8),
+                  status: n.status || 'pending',
+                }));
+            })
+            .catch(() => {});
+        },
+
+        refreshBandit() {
+          fetch('/api/bandit?limit=1')
+            .then(r => r.json())
+            .then(rows => {
+              if (!rows.length) return;
+              const b = rows[0];
+              const alpha = Number(b.alpha || 1);
+              const beta = Number(b.beta || 1);
+              this.bandit = {
+                alpha: alpha.toFixed(1),
+                beta: beta.toFixed(1),
+                pEngage: (alpha / (alpha + beta)).toFixed(2),
+                updated: this.formatTime(b.last_updated),
+                samples: String(Math.round(alpha + beta - 2)),
+              };
+            })
+            .catch(() => {});
+        },
+
+        handleEvent(ev) {
+          const t = new Date(ev.timestamp).toLocaleTimeString([], { hour12: false });
+          if (ev.kind === 'notification' && ev.data.digest) {
+            this.applyNotification({
+              notification_id: ev.data.notification_id,
+              digest: ev.data.digest,
+            });
+            this.refreshNotifications();
+          }
+          if (ev.kind === 'indicator') {
+            const reason = ev.data.reason || ev.message;
+            this.activityLog.unshift({
+              time: t,
+              kind: ev.message === 'SURFACE' ? 'SURFACE' : 'KAIROS_OK',
+              reason: reason,
+              cluster: this.lastDecision.cluster,
+              score: this.lastDecision.score,
+              gate: ev.message === 'SURFACE' ? 'PASS' : '—',
+            });
+          }
+          if (ev.kind === 'activity') {
+            this.lastDecision = {
+              cluster: ev.data.cluster_id?.slice(0, 24) || '—',
+              score: ev.data.adjusted_score?.toFixed?.(2) ?? '—',
+              threshold: 0.12,
+              banditP: this.bandit.pEngage,
+              gate: ev.data.gate_reasons || {},
+            };
+            this.activityLog.unshift({
+              time: t,
+              kind: ev.data.should_surface ? 'SURFACE' : 'KAIROS_OK',
+              cluster: ev.data.cluster_id?.slice(0, 24),
+              score: ev.data.adjusted_score?.toFixed?.(2),
+              gate: ev.data.should_surface ? 'PASS' : '—',
+              reason: Object.entries(ev.data.gate_reasons || {})
+                .filter(([, v]) => !v)
+                .map(([k]) => k)
+                .join(', ') || 'all gates pass',
+            });
+          }
+          if (ev.kind === 'feedback') {
+            this.refreshBandit();
+            this.refreshNotifications();
+          }
+          if (this.activityLog.length > 40) {
+            this.activityLog = this.activityLog.slice(0, 40);
+          }
         },
 
         init() {
-          // TODO: wire EventBus SSE
-          // const es = new EventSource('/events');
-          // es.onmessage = e => {
-          //   const ev = JSON.parse(e.data);
-          //   if (ev.kind === 'notification') { this.active = ev.data.digest; }
-          //   if (ev.kind === 'activity')     { this.activityLog.unshift(ev.data); }
-          //   if (ev.kind === 'indicator')    { /* update live dot */ }
-          // };
+          this.refreshNotifications();
+          this.refreshBandit();
+          const es = new EventSource('/api/stream');
+          es.onmessage = e => {
+            try {
+              this.handleEvent(JSON.parse(e.data));
+            } catch (_) {}
+          };
         },
       }
     }
