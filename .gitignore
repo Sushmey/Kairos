@@ -1,12 +1,65 @@
+# Project-specific
 .agents
 .claude
 skills-lock.json
-.env
-.venv
-__pycache__/
-*.pyc
 .mcp.json
 opencode.json
 .codex
 .cursor
-.vscode
+
+# Virtual environments
+kairos/
+.venv/
+venv/
+env/
+ENV/
+pyvenv.cfg
+
+# Byte-compiled / optimized / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# Testing / coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.cache
+
+# Type checkers / linters
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# Environment / secrets
+.env
+.env.*
+*.local
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / editors
+.idea/
+.vscode/
+.cursor
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
