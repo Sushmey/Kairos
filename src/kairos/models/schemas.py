@@ -75,8 +75,16 @@ class BookmarkDocument(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class ClusterDigest(BaseModel):
-    """Topic cluster digest surfaced to the user."""
+class UrlCitation(BaseModel):
+    """Source link from Gemini Google Search grounding."""
+
+    url: str
+    title: str | None = None
+    cited_text: str | None = None
+
+
+class ClusterDigestCore(BaseModel):
+    """Structured digest fields generated from bookmarks + context."""
 
     cluster_id: str
     cluster_name: str
@@ -84,6 +92,13 @@ class ClusterDigest(BaseModel):
     why_now: str
     links: list[dict[str, str]]  # {url, label, consumption_mode}
     member_count: int
+
+
+class ClusterDigest(ClusterDigestCore):
+    """Topic cluster digest surfaced to the user."""
+
+    web_context: str | None = None
+    citations: list[UrlCitation] = Field(default_factory=list)
 
 
 class SurfaceDecision(BaseModel):

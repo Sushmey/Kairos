@@ -15,11 +15,18 @@ def digest_to_markdown(digest: ClusterDigest) -> str:
         f"**Why now:** {digest.why_now}",
         "",
     ]
+    if digest.web_context:
+        lines.extend(["**From the web:**", "", digest.web_context, ""])
     for link in digest.links:
         label = link.get("label", link.get("url", "link"))
         mode = link.get("consumption_mode", "")
         suffix = f" — {mode}" if mode else ""
         lines.append(f"- [{label}]({link.get('url', '#')}){suffix}")
+    if digest.citations:
+        lines.extend(["", "**Sources:**"])
+        for citation in digest.citations[:8]:
+            title = citation.title or citation.url
+            lines.append(f"- [{title}]({citation.url})")
     return "\n".join(lines)
 
 

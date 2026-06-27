@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kairos</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            serif: ['Instrument Serif', 'Georgia', 'serif'],
+            sans:  ['Inter', 'system-ui', 'sans-serif'],
+            mono:  ['JetBrains Mono', 'Consolas', 'monospace'],
+          },
+          colors: {
+            t: {
+              bg:     '#0A0C0E',
+              panel:  '#111418',
+              border: '#1C2128',
+              amber:  '#E8A73A',
+              dim:    '#6B5322',
+              bright: '#F5C842',
+              green:  '#4ADE80',
+              red:    '#F87171',
+            },
+          },
+        },
+      },
+    }
+  </script>
+
+  <style>
+    [x-cloak] { display: none !important; }
+
+    /* Scan-line wipe */
+    @keyframes scanDown {
+      0%   { transform: translateY(-4px); opacity: 1; }
+      85%  { opacity: 1; }
+      100% { transform: translateY(100vh); opacity: 0; }
+    }
+    .scan-wipe { animation: scanDown 0.38s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+
+    /* Terminal cursor */
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+    .cursor { animation: blink 1s step-end infinite; }
+
+    /* Thin scrollbar for terminal pane */
+    .slim-scroll { scrollbar-width: thin; scrollbar-color: #1C2128 transparent; }
+    .slim-scroll::-webkit-scrollbar { width: 3px; }
+    .slim-scroll::-webkit-scrollbar-thumb { background: #1C2128; border-radius: 2px; }
+
+    /* Fade-in on mode switch */
+    @keyframes fadeUp { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+    .fade-up { animation: fadeUp 0.2s ease forwards; }
+  </style>
+
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+</head>
+
+<body
+  x-data="dashboard()"
+  x-init="init()"
+  :class="mode==='user'
+    ? 'bg-[#FAFAF8] text-[#111111] font-sans'
+    : 'bg-t-bg text-t-amber font-mono'"
+  class="min-h-screen flex flex-col select-none"
+>
+
+  <!-- ── Scan-line overlay ── -->
+  <div x-show="scanning" x-cloak class="fixed inset-0 z-50 pointer-events-none overflow-hidden">
+    <div
+      class="scan-wipe w-full"
+      :class="mode==='user' ? 'bg-t-amber' : 'bg-white'"
+      style="height:2px; box-shadow: 0 0 32px 16px currentColor;"
+    ></div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════
+       HEADER
+  ════════════════════════════════════════════════ -->
+  <header
+    class="flex items-center justify-between px-8 py-5 border-b shrink-0"
+    :class="mode==='user' ? 'border-[#E5E7EB]' : 'border-t-border'"
+  >
+    <!-- Wordmark -->
+    <div>
+      <span x-show="mode==='user'" class="text-[#111111] text-lg font-medium tracking-[-0.03em]">kairos</span>
+      <span x-show="mode==='admin'" x-cloak class="text-t-amber font-mono text-sm tracking-[0.12em]">
+        KAIROS<span class="text-t-dim">/SYS</span>
+      </span>
+    </div>
+
+    <!-- Right controls -->
+    <div class="flex items-center gap-5">
+      <!-- Live dot -->
+      <div class="flex items-center gap-2">
+        <span
+          class="w-2 h-2 rounded-full"
+          :class="mode==='user' ? 'bg-emerald-500' : 'bg-t-green'"
+        ></span>
+        <span
+          class="text-sm"
+          :class="mode==='user' ? 'text-[#6B7280]' : 'text-t-dim text-xs tracking-wider'"
+          x-text="mode==='user' ? 'live' : 'watching'"
+        ></span>
+      </div>
+
+      <!-- Mode toggle -->
+      <button
+        @click="toggleMode()"
+        class="flex items-center gap-2 px-4 py-1.5 rounded-full text-sm border transition-colors cursor-pointer"
+        :class="mode==='user'
+          ? 'border-[#E5E7EB] text-[#6B7280] hover:text-[#111] hover:border-[#9CA3AF]'
+          : 'border-t-border text-t-dim hover:text-t-amber hover:border-t-amber font-mono text-xs tracking-wider'"
+        x-text="mode==='user' ? '⬡ admin' : '◻ user'"
+      ></button>
+    </div>
+  </header>
+
+  <!-- ════════════════════════════════════════════════
+       USER VIEW  (calm · personal)
+  ════════════════════════════════════════════════ -->
+  <div
+    x-show="mode==='user'"
+    x-cloak
+    class="fade-up flex-1 max-w-5xl mx-auto w-full px-8 py-10"
+  >
+    <!-- Greeting -->
+    <div class="mb-10">
+      <p class="text-[#9CA3AF] text-sm mb-1.5" x-text="greeting.date"></p>
+      <h1 class="text-[1.6rem] font-medium tracking-[-0.025em] leading-snug text-[#111]">
+        <span x-text="greeting.salutation"></span>
+        You have
+        <span class="text-[#C4922A]" x-text="context.gap + ' minutes'"></span>
+        before your next meeting.
+      </h1>
+    </div>
+
+    <!-- Layout: inbox + sidebar -->
+    <div class="grid grid-cols-[1fr_268px] gap-8 items-start">
+
+      <!-- ── Inbox ── -->
+      <div>
+
+        <!-- Active notification card -->
+        <div class="bg-white border border-[#E5E7EB] rounded-2xl p-7 shadow-sm mb-6">
+          <div class="flex items-start justify-between mb-0.5">
+            <h2
+              class="font-serif text-[1.75rem] leading-tight text-[#111]"
+              x-text="active.cluster"
+            ></h2>
+            <span class="text-xs text-[#9CA3AF] mt-2.5 shrink-0 ml-4" x-text="active.memberCount + ' bookmarks'"></span>
+          </div>
+
+          <p class="font-serif italic text-[#6B7280] text-[0.95rem] mb-5" x-text="active.whyNow"></p>
+
+          <div class="border-t border-[#F3F4F6] mb-5"></div>
+
+          <!-- Links -->
+          <ul class="space-y-3.5 mb-7">
+            <template x-for="link in active.links" :key="link.label">
+              <li class="flex items-start justify-between gap-4">
+                <a
+                  href="#"
+                  class="text-sm font-medium text-[#111] hover:text-[#C4922A] underline-offset-2 hover:underline transition-colors"
+                  x-text="link.label"
+                ></a>
+                <span
+                  class="text-[11px] text-[#9CA3AF] whitespace-nowrap mt-0.5 shrink-0"
+                  x-text="link.mode + (link.time ? ' · ' + link.time : '')"
+                ></span>
+              </li>
+            </template>
+          </ul>
+
+          <!-- Actions -->
+          <div class="flex items-center gap-3">
+            <button class="px-5 py-2 rounded-lg bg-[#111] text-white text-sm font-medium hover:bg-[#2a2a2a] transition-colors cursor-pointer">
+              Open all
+            </button>
+            <button
+              @click="snooze(active.id)"
+              class="px-5 py-2 rounded-lg border border-[#E5E7EB] text-[#6B7280] text-sm hover:border-[#9CA3AF] hover:text-[#111] transition-colors cursor-pointer"
+            >
+              Snooze 2h
+            </button>
+            <button
+              @click="dismiss(active.id)"
+              class="ml-auto text-[#9CA3AF] hover:text-[#6B7280] text-sm transition-colors cursor-pointer"
+            >
+              Not relevant
+            </button>
+          </div>
+        </div>
+
+        <!-- History -->
+        <div>
+          <p class="text-[10px] font-semibold text-[#9CA3AF] uppercase tracking-[0.1em] mb-3">Earlier today</p>
+          <div class="divide-y divide-[#F3F4F6]">
+            <template x-for="item in history" :key="item.time + item.cluster">
+              <div class="flex items-center justify-between py-3">
+                <div class="flex items-center gap-4">
+                  <span class="text-xs text-[#9CA3AF] w-20 shrink-0" x-text="item.time"></span>
+                  <span class="text-sm text-[#374151]" x-text="item.cluster"></span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <span
+                    class="w-1.5 h-1.5 rounded-full"
+                    :class="{
+                      'bg-emerald-400': item.status==='engaged',
+                      'bg-amber-400':   item.status==='snoozed',
+                      'bg-[#E5E7EB]':   item.status==='dismissed',
+                    }"
+                  ></span>
+                  <span
+                    class="text-xs"
+                    :class="{
+                      'text-emerald-600': item.status==='engaged',
+                      'text-amber-600':   item.status==='snoozed',
+                      'text-[#9CA3AF]':   item.status==='dismissed',
+                    }"
+                    x-text="item.status"
+                  ></span>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── Sidebar ── -->
+      <div class="space-y-5">
+
+        <!-- Context card -->
+        <div class="bg-white border border-[#E5E7EB] rounded-xl p-5">
+          <p class="text-[10px] font-semibold text-[#9CA3AF] uppercase tracking-[0.1em] mb-4">Right now</p>
+          <div class="space-y-3">
+            <div class="flex justify-between">
+              <span class="text-sm text-[#6B7280]">Gap</span>
+              <span class="text-sm font-medium" x-text="context.gap + ' min'"></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-sm text-[#6B7280]">Surfaces</span>
+              <span class="text-sm font-medium" x-text="context.surfaces + ' / ' + context.budget"></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-sm text-[#6B7280]">Location</span>
+              <span class="text-sm font-medium" x-text="context.location"></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-sm text-[#6B7280]">Next meeting</span>
+              <span class="text-sm font-medium text-[#C4922A]" x-text="context.nextMeeting"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Engagement card -->
+        <div class="bg-white border border-[#E5E7EB] rounded-xl p-5">
+          <p class="text-[10px] font-semibold text-[#9CA3AF] uppercase tracking-[0.1em] mb-1">Engagement</p>
+          <div class="flex items-baseline gap-2 mb-5">
+            <span class="text-3xl font-semibold tracking-tight" x-text="engagementRate + '%'"></span>
+            <span class="text-xs text-emerald-600 font-medium">+12% this week</span>
+          </div>
+          <!-- Sparkline -->
+          <div class="flex items-end gap-1 h-10">
+            <template x-for="(v, i) in sparkline" :key="i">
+              <div
+                class="flex-1 rounded-[2px]"
+                :class="i===sparkline.length-1 ? 'bg-[#C4922A]' : 'bg-[#E5E7EB]'"
+                :style="'height:' + Math.round(v*100) + '%'"
+              ></div>
+            </template>
+          </div>
+          <div class="flex justify-between mt-1.5">
+            <span class="text-[10px] text-[#9CA3AF]">10 sessions ago</span>
+            <span class="text-[10px] text-[#9CA3AF]">now</span>
+          </div>
+        </div>
+
+        <!-- Clusters -->
+        <div class="bg-white border border-[#E5E7EB] rounded-xl p-5">
+          <p class="text-[10px] font-semibold text-[#9CA3AF] uppercase tracking-[0.1em] mb-4">Your clusters</p>
+          <div class="space-y-2.5">
+            <template x-for="c in clusters" :key="c.name">
+              <div class="flex justify-between items-center">
+                <span class="text-sm text-[#374151]" x-text="c.name"></span>
+                <span class="text-[11px] text-[#9CA3AF]" x-text="c.count"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════
+       ADMIN VIEW  (terminal · observability)
+  ════════════════════════════════════════════════ -->
+  <div
+    x-show="mode==='admin'"
+    x-cloak
+    class="fade-up flex-1 grid grid-cols-[360px_1fr] overflow-hidden"
+  >
+
+    <!-- ── Left: Activity feed ── -->
+    <div class="border-r border-t-border flex flex-col overflow-hidden">
+
+      <div class="px-5 py-3.5 border-b border-t-border flex justify-between items-center shrink-0">
+        <span class="text-t-dim text-xs tracking-[0.1em]">ACTIVITY FEED</span>
+        <span class="text-t-dim text-xs" x-text="'Δ ' + decisionInterval + 's'"></span>
+      </div>
+
+      <div class="flex-1 overflow-y-auto slim-scroll">
+        <template x-for="(ev, i) in activityLog" :key="i">
+          <div
+            class="px-5 py-3 border-b border-t-border/40 transition-colors"
+            :class="i===0 ? 'bg-t-panel' : 'hover:bg-t-panel/50'"
+          >
+            <div class="flex items-center gap-3 mb-1">
+              <span class="text-t-dim text-xs shrink-0" x-text="ev.time"></span>
+              <span
+                class="text-xs font-medium"
+                :class="ev.kind==='SURFACE' ? 'text-t-green' : 'text-t-dim'"
+                x-text="ev.kind"
+              ></span>
+              <span x-show="i===0" class="cursor text-t-amber text-xs">█</span>
+            </div>
+            <div class="text-xs pl-0 mt-0.5">
+              <template x-if="ev.kind==='SURFACE'">
+                <div>
+                  <span class="text-t-dim">cluster=</span><span class="text-t-bright" x-text="ev.cluster"></span>
+                  <span class="text-t-dim ml-3">score=</span><span class="text-t-bright" x-text="ev.score"></span>
+                  <span class="text-t-dim ml-3">gate=</span><span class="text-t-green" x-text="ev.gate"></span>
+                </div>
+              </template>
+              <template x-if="ev.kind==='KAIROS_OK'">
+                <div class="text-t-dim" x-text="ev.reason"></div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Services status bar -->
+      <div class="px-5 py-3 border-t border-t-border flex gap-5 shrink-0">
+        <template x-for="svc in services" :key="svc.name">
+          <div class="flex items-center gap-1.5">
+            <span
+              class="w-1.5 h-1.5 rounded-full"
+              :class="{
+                'bg-t-green': svc.status==='ok',
+                'bg-amber-400': svc.status==='warn',
+                'bg-t-red': svc.status==='err',
+              }"
+            ></span>
+            <span class="text-t-dim text-xs" x-text="svc.name"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ── Right: Decision + GEPA + metrics ── -->
+    <div class="overflow-y-auto slim-scroll">
+
+      <!-- Last decision -->
+      <div class="border-b border-t-border p-6">
+        <p class="text-t-dim text-xs tracking-[0.1em] mb-5">LAST DECISION</p>
+        <div class="grid grid-cols-2 gap-8">
+
+          <!-- Scores -->
+          <div class="space-y-2.5">
+            <div class="flex justify-between">
+              <span class="text-t-dim text-xs">cluster</span>
+              <span class="text-t-bright text-xs" x-text="lastDecision.cluster"></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-t-dim text-xs">vector score</span>
+              <span class="text-t-bright text-xs" x-text="lastDecision.score"></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-t-dim text-xs">threshold</span>
+              <span class="text-t-amber text-xs" x-text="lastDecision.threshold"></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-t-dim text-xs">bandit p(engage)</span>
+              <span class="text-t-green text-xs" x-text="lastDecision.banditP"></span>
+            </div>
+          </div>
+
+          <!-- Gate results -->
+          <div class="space-y-2.5">
+            <p class="text-t-dim text-xs tracking-[0.08em]">INTERRUPT GATE</p>
+            <template x-for="(passed, key) in lastDecision.gate" :key="key">
+              <div class="flex justify-between">
+                <span class="text-t-dim text-xs" x-text="key"></span>
+                <span
+                  class="text-xs"
+                  :class="passed ? 'text-t-green' : 'text-t-red'"
+                  x-text="passed ? '✓' : '✗'"
+                ></span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- GEPA sleep-time diff -->
+      <div class="border-b border-t-border p-6">
+        <div class="flex items-baseline justify-between mb-5">
+          <p class="text-t-dim text-xs tracking-[0.1em]">SLEEP-TIME PASS · 02:00</p>
+          <span class="text-t-green text-xs" x-text="gepa.version + ' · ' + gepa.delta + ' engagement'"></span>
+        </div>
+
+        <div class="bg-t-panel border border-t-border rounded p-4 font-mono text-xs space-y-2">
+          <div class="flex gap-3">
+            <span class="text-t-red shrink-0">-</span>
+            <span class="text-t-red" x-text="gepa.before"></span>
+          </div>
+          <div class="flex gap-3">
+            <span class="text-t-green shrink-0">+</span>
+            <span class="text-t-green" x-text="gepa.after"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Engagement chart -->
+      <div class="border-b border-t-border p-6">
+        <p class="text-t-dim text-xs tracking-[0.1em] mb-5">ENGAGEMENT · SESSION HISTORY</p>
+        <div class="flex items-end gap-1.5 h-14 mb-2">
+          <template x-for="(v, i) in sparkline" :key="i">
+            <div class="flex-1 flex flex-col justify-end">
+              <div
+                class="w-full rounded-[2px] border"
+                :class="i===sparkline.length-1
+                  ? 'bg-t-amber border-t-amber'
+                  : 'bg-t-panel border-t-border'"
+                :style="'height:' + Math.round(v*100) + '%'"
+              ></div>
+            </div>
+          </template>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-t-dim text-xs">10 sessions ago</span>
+          <span class="text-t-amber text-xs font-medium" x-text="engagementRate + '% now'"></span>
+        </div>
+      </div>
+
+      <!-- Bandit params -->
+      <div class="p-6">
+        <p class="text-t-dim text-xs tracking-[0.1em] mb-4">BANDIT PARAMS · <span class="text-t-amber" x-text="lastDecision.cluster + ' × pre-meeting'"></span></p>
+        <div class="bg-t-panel border border-t-border rounded p-4 font-mono text-xs space-y-2">
+          <div>
+            <span class="text-t-dim">alpha </span><span class="text-t-bright" x-text="bandit.alpha"></span>
+            <span class="text-t-dim ml-6">beta </span><span class="text-t-bright" x-text="bandit.beta"></span>
+          </div>
+          <div>
+            <span class="text-t-dim">p(engage) </span><span class="text-t-green" x-text="bandit.pEngage"></span>
+            <span class="text-t-dim ml-6">updated </span><span class="text-t-amber" x-text="bandit.updated"></span>
+          </div>
+          <div>
+            <span class="text-t-dim">samples </span><span class="text-t-amber" x-text="bandit.samples"></span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════
+       DATA + BEHAVIOUR
+  ════════════════════════════════════════════════ -->
+  <script>
+    function dashboard() {
+      return {
+        mode: 'user',
+        scanning: false,
+        decisionInterval: 300,
+
+        greeting: {
+          date: 'Friday, 27 June · 2:18 PM',
+          salutation: 'Good afternoon. ',
+        },
+
+        context: {
+          gap: 42,
+          surfaces: 2,
+          budget: 5,
+          location: 'office',
+          nextMeeting: '3:00 PM',
+        },
+
+        active: {
+          id: 'n_001',
+          cluster: 'Distributed Systems',
+          memberCount: 8,
+          whyNow: 'Before your 3pm infra architecture review.',
+          links: [
+            { label: 'CAP theorem + modern tradeoffs',    mode: 'dense read', time: '12 min' },
+            { label: 'Kafka vs Redpanda — full thread',   mode: 'skim',       time: '3 min'  },
+            { label: 'Jepsen results for Postgres 16',    mode: 'reference',  time: null      },
+            { label: 'Consistent hashing from scratch',   mode: 'skim',       time: '5 min'  },
+          ],
+        },
+
+        history: [
+          { time: '11:04am',   cluster: 'AI Security',     status: 'engaged'   },
+          { time: '9:12am',    cluster: 'System Design',   status: 'dismissed' },
+          { time: 'Yesterday', cluster: 'ML Papers',       status: 'snoozed'   },
+          { time: 'Yesterday', cluster: 'Distributed Sys', status: 'engaged'   },
+        ],
+
+        clusters: [
+          { name: 'Distributed Systems', count: '8'  },
+          { name: 'AI Security',         count: '14' },
+          { name: 'System Design',       count: '6'  },
+          { name: 'ML Papers',           count: '23' },
+          { name: 'Places & Food',       count: '11' },
+        ],
+
+        activityLog: [
+          { time: '14:22:01', kind: 'SURFACE',   cluster: 'distributed-systems', score: 0.84, gate: 'PASS' },
+          { time: '14:17:00', kind: 'KAIROS_OK', reason: 'gate: score_threshold (0.61 < 0.72)' },
+          { time: '14:12:00', kind: 'KAIROS_OK', reason: 'gate: gap_insufficient (18m < 30m)' },
+          { time: '14:07:00', kind: 'KAIROS_OK', reason: 'gate: min_gap (22m since last surface)' },
+          { time: '14:02:01', kind: 'SURFACE',   cluster: 'ai-security', score: 0.79, gate: 'PASS' },
+          { time: '13:57:00', kind: 'KAIROS_OK', reason: 'gate: budget (5 / 5 reached)' },
+          { time: '13:52:00', kind: 'KAIROS_OK', reason: 'gate: score_threshold (0.48 < 0.72)' },
+          { time: '13:47:01', kind: 'SURFACE',   cluster: 'ml-papers', score: 0.76, gate: 'PASS' },
+          { time: '13:42:00', kind: 'KAIROS_OK', reason: 'gate: gap_insufficient (9m < 30m)' },
+          { time: '13:37:00', kind: 'KAIROS_OK', reason: 'gate: score_threshold (0.55 < 0.72)' },
+        ],
+
+        lastDecision: {
+          cluster:  'distributed-systems',
+          score:    0.84,
+          threshold: 0.72,
+          banditP:  '0.75',
+          gate: {
+            daily_budget:    true,
+            calendar_gap:    true,
+            min_gap:         true,
+            score_threshold: true,
+          },
+        },
+
+        gepa: {
+          version: 'v3 → v4',
+          delta:   '+13%',
+          before:  '"Here are relevant threads from your bookmarks."',
+          after:   '"Before {event}, these {n} threads might be useful:"',
+        },
+
+        bandit: {
+          alpha:   '12.4',
+          beta:    '4.1',
+          pEngage: '0.75',
+          updated: '14:22:01',
+          samples: '47',
+        },
+
+        services: [
+          { name: 'mongodb',  status: 'ok'   },
+          { name: 'gemini',   status: 'ok'   },
+          { name: 'calendar', status: 'warn' },
+          { name: 'mcp',      status: 'ok'   },
+        ],
+
+        sparkline: [0.45, 0.52, 0.48, 0.55, 0.58, 0.61, 0.65, 0.68, 0.71, 0.74],
+
+        get engagementRate() {
+          return Math.round(this.sparkline[this.sparkline.length - 1] * 100);
+        },
+
+        toggleMode() {
+          this.scanning = true;
+          setTimeout(() => { this.mode = this.mode === 'user' ? 'admin' : 'user'; }, 190);
+          setTimeout(() => { this.scanning = false; }, 420);
+        },
+
+        snooze(id) {
+          // TODO: POST /feedback { notification_id: id, action: 'snoozed' }
+          console.log('[kairos] snooze', id);
+        },
+
+        dismiss(id) {
+          // TODO: POST /feedback { notification_id: id, action: 'dismissed' }
+          console.log('[kairos] dismiss', id);
+        },
+
+        init() {
+          // TODO: wire EventBus SSE
+          // const es = new EventSource('/events');
+          // es.onmessage = e => {
+          //   const ev = JSON.parse(e.data);
+          //   if (ev.kind === 'notification') { this.active = ev.data.digest; }
+          //   if (ev.kind === 'activity')     { this.activityLog.unshift(ev.data); }
+          //   if (ev.kind === 'indicator')    { /* update live dot */ }
+          // };
+        },
+      }
+    }
+  </script>
+</body>
+</html>

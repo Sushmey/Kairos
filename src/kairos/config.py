@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.5-flash"
     gemini_flash_lite_model: str = "gemini-3.1-flash-lite"
+    digest_use_google_search: bool = True
     enrich_concurrency: int = 10
     enrich_max_input_chars: int = 2000
 
