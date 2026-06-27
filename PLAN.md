@@ -50,8 +50,8 @@ Kairos is a **contextual bandit**: at each candidate moment, score bookmark clus
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
 │                      DELIVERY LAYER                         │
-│  Cluster digest (summary + ranked links) + "Why now"        │
-│  macOS notification → feedback capture (tap/snooze/dismiss) │
+│  HeartbeatService → persist notification → adapter fan-out  │
+│  web (SSE inbox) · MCP return (host transcript) · OS (opt)  │
 └──────────────────────────┬──────────────────────────────────┘
                            │
           ┌────────────────┴────────────────┐
@@ -148,6 +148,22 @@ Topical affinity determines **which cluster** to surface. Attention capacity det
   "centroid_embedding": list[float],  # mean of member embeddings
   "member_count": int,
   "last_updated": datetime,
+}
+```
+
+**`notifications`** — one document per surface event (canonical, before feedback)
+
+```python
+{
+  "_id": ObjectId(),
+  "notification_id": str,           # uuid, client-facing
+  "cluster_id": ObjectId,
+  "digest": dict,                   # ClusterDigest payload
+  "context_snapshot": dict,
+  "status": str,                    # pending | snoozed | dismissed | acted | expired
+  "created_at": datetime,
+  "expires_at": datetime | None,
+  "feedback_event_id": ObjectId | None,
 }
 ```
 
@@ -343,70 +359,120 @@ Demo: manual "I am here" toggle. Continuous background GPS is an OS permissions 
 
 ## Interfaces
 
+**Principle:** policy core is channel-agnostic. Ranking and gating always produce a `HeartbeatResult` (`KAIROS_OK` | `SURFACE`). Delivery adapters fan out to whatever host is connected — web app, MCP coding agent, optional OS notify.
+
+```
+Policy Core (HeartbeatService)
+        │
+        ├─ always persists → notifications collection
+        │
+        └─ adapter fan-out (configured per deployment)
+              ├─ web      → SSE + notification inbox
+              ├─ mcp_return → structured payload + rendered_markdown + host hints
+              └─ os       → terminal-notifier / notify-send (optional, platform-gated)
+```
+
+### Heartbeat response contract
+
+| Status | Meaning | User-visible (default) |
+|--------|---------|------------------------|
+| `KAIROS_OK` | Interrupt gate failed — silence | Hidden (`showOk: false`); logged in activity pane |
+| `SURFACE` | Digest approved | Shown via configured delivery targets |
+
+MCP host loop (Claude Code `/loop`):
+
+```
+Call kairos run_heartbeat
+  → KAIROS_OK: reply HEARTBEAT_OK, stay quiet
+  → SURFACE: print delivery.rendered_markdown in transcript;
+             optionally open delivery.dashboard_url;
+             ask user for feedback → record_feedback
+```
+
 ### Web Dashboard (single page, two panes)
 
-No split between user view and admin view — the observability IS the demo.
+Delivery target when `DELIVERY_TARGETS=web`. Also serves observability.
 
 ```
 ┌─────────────────────────┬──────────────────────────────────┐
-│   UPCOMING / HISTORY    │   AGENT ACTIVITY (live via SSE)  │
+│  NOTIFICATION INBOX     │   AGENT ACTIVITY (live via SSE)  │
+│  (delivery)             │   (heartbeat observability)      │
 │                         │                                  │
-│  ● 2:30pm               │  14:22 scored 8 clusters         │
-│    Distributed Systems  │  14:22 infra-arch → 0.84 ✓       │
-│    [before your mtg]    │  14:22 gate: gap=42m ✓ budget ✓  │
-│                         │  14:22 → surfaced digest         │
-│  ✓ 11am — engaged       │                                  │
-│  ✗ 9am — dismissed      │  LAST SLEEP-TIME PASS            │
-│                         │  prompt diff (summary v3→v4):    │
-│  Engagement rate        │  - "Here are relevant threads"   │
-│  ████████░░ 74% (+12%)  │  + "Before {event}, these {n}…"  │
-│                         │  engagement: 61% → 74% ✓         │
-│  [Manage clusters]      │                                  │
-│  [Restraint budget: 3]  │                                  │
+│  🔔 NEW 2:30pm          │  14:22 heartbeat tick            │
+│    Distributed Systems  │  14:22 gate: score ✗ → KAIROS_OK │
+│    [before your mtg]    │  14:27 → SURFACE published       │
+│  [Open] [Snooze] [✗]    │                                  │
+│  ✓ 11am — engaged       │  LAST GEPA PASS                  │
+│  ✗ 9am — dismissed      │  prompt diff v3→v4              │
 └─────────────────────────┴──────────────────────────────────┘
 ```
 
-Real-time updates via **Server-Sent Events** (SSE) — one-directional, 20 lines of FastAPI, no WebSocket setup.
+SSE event kinds on `GET /api/stream`:
 
-### Notification Delivery
-
-macOS system notification (`terminal-notifier`). Fires from the scheduler, taps the OS. The web dashboard shows it in the activity log simultaneously. Clean separation: delivery vs. observability.
+| kind | purpose |
+|------|---------|
+| `indicator` | heartbeat ran (`ok` / `alert` / `skipped`) |
+| `activity` | ranking steps, gate results |
+| `notification` | new digest for inbox |
+| `feedback` | user action recorded |
+| `optimization` | GEPA pass complete |
 
 ### MCP Server (FastMCP)
 
-Makes the bookmark brain available as context in any AI-assisted workflow. The killer use case: coding in Claude Code and asking it to review an architecture decision — it calls `get_relevant_bookmarks` and pulls your hoarded threads directly into the conversation.
+Two tool categories — query (any session) vs heartbeat (scheduled loop):
 
 ```python
+# Query — on-demand context for coding agents
 @mcp.tool()
-def get_relevant_bookmarks(query: str, limit: int = 5) -> list[Bookmark]:
-    """Semantic search over bookmark index."""
+def get_relevant_bookmarks(query: str, limit: int = 5) -> list[Bookmark]: ...
 
 @mcp.tool()
-def get_cluster_summary(topic: str) -> ClusterDigest:
-    """Return the cluster closest to topic with generated summary."""
+def get_cluster_summary(topic: str) -> ClusterDigest: ...
 
 @mcp.tool()
-def surface_now(context: str | None = None) -> Notification | None:
-    """Run full ranking pipeline against current context, return top candidate."""
+def add_bookmark(url: str, notes: str = "") -> Bookmark: ...
+
+# Heartbeat — periodic decision loop (Claude Code /loop, cron, manual)
+@mcp.tool()
+def run_heartbeat(
+    delivery: Literal["auto", "return_only", "none"] = "auto",
+    context_override: str | None = None,
+) -> HeartbeatResult:
+    """Returns KAIROS_OK or SURFACE + delivery.rendered_markdown + suggested_host_actions.
+    Host agent presents SURFACE in transcript using its native mechanisms."""
 
 @mcp.tool()
-def add_bookmark(url: str, notes: str = "") -> Bookmark:
-    """Ingest a new bookmark into the pipeline."""
+def record_feedback(notification_id: str, action: str, url: str | None = None) -> dict:
+    """Capture feedback from any host (chat prompt, web inbox, etc.)."""
+```
+
+**Host agent responsibilities:** render `delivery.rendered_markdown` in chat; optionally invoke OS notify if user enabled it; call `record_feedback` after user responds. Kairos does not assume a specific IDE.
+
+**Hybrid:** MCP heartbeat persists notification → SSE pushes to open dashboard. Return includes `delivery.dashboard_url`. Host can say "check your Kairos dashboard" or show markdown inline.
+
+### Delivery configuration
+
+```yaml
+# env / kairos.yaml
+DELIVERY_TARGETS=web          # comma-separated: web, os
+WEB_BASE_URL=http://localhost:8420
+OS_DELIVERY_ENABLED=false     # opt-in; macOS terminal-notifier, Linux notify-send
+MCP_SUPPRESS_OK_IN_CHAT=true  # hide KAIROS_OK from host transcript
 ```
 
 ---
 
 ## Scheduling
 
-Custom scheduler eliminated. Three Claude Code mechanisms replace it:
-
 | Job | Mechanism | Interval |
 |-----|-----------|----------|
-| Context polling + bandit decision (demo) | `/loop` in Claude Code session | 5 min |
-| Context polling + bandit decision (prod) | Desktop Scheduled Task | 5 min |
-| Nightly GEPA sleep-time pass | Cloud Routine → `POST /optimize` | Daily 2am |
+| Heartbeat (demo) | Claude Code `/loop` → MCP `run_heartbeat` | 5 min |
+| Heartbeat (prod) | `POST /heartbeat` or `kairos heartbeat` via cron | 5 min |
+| Nightly GEPA pass | Cloud Routine → `POST /optimize` | Daily 2am |
 
-During the demo: Claude Code session stays open with Kairos MCP connected. The `/loop` runs every 5 min, calls MCP tools, makes decisions. **The session transcript is the agent observability.** No custom logging UI needed.
+All heartbeat triggers call the same `HeartbeatService` — HTTP, CLI, MCP, and Antigravity harness are thin wrappers.
+
+During demo with MCP: Claude Code `/loop` calls `run_heartbeat`. SURFACE digests appear in the session transcript; activity also streams to the web dashboard if `kairos serve` is running. **Transcript OR inbox — both valid delivery surfaces.**
 
 ---
 
@@ -420,10 +486,10 @@ During the demo: Claude Code session stays open with Kairos MCP connected. The `
 | Clustering | HDBSCAN (natural topic boundaries, no fixed k) |
 | Bandit | Thompson sampling over logistic model (`scikit-learn`, ~50 lines custom) |
 | Prompt optimization | DSPy + GEPA |
-| API backend | FastAPI + SSE |
-| Scheduling | Claude Code `/loop` (demo) + Desktop Task (prod) + Cloud Routine (GEPA) |
-| Notification delivery | `terminal-notifier` (macOS) |
-| MCP server | FastMCP |
+| API backend | FastAPI + SSE (`/api/stream`, `/heartbeat`) |
+| Scheduling | Claude Code `/loop` (demo) + HTTP/cron heartbeat (prod) + Cloud Routine (GEPA) |
+| Delivery | Adapter registry: web SSE, MCP return payload, optional OS notify |
+| MCP server | FastMCP (`run_heartbeat`, `record_feedback`, query tools) |
 | Calendar | Google Calendar API (OAuth2) |
 | Geo | `geopy` for geocoding, manual toggle for demo |
 | Bookmark ingest | X API v2 `GET /2/users/{id}/bookmarks` (OAuth2 user token) |
@@ -536,9 +602,13 @@ Be explicit that real learning takes weeks; the simulator compresses it to 3 min
 - [ ] Interrupt gate + restraint budget
 
 ### Hour 5–8: Delivery + Feedback
-- [ ] macOS notification via `terminal-notifier` with cluster digest
-- [ ] Feedback capture: `feedback_events` write on tap/snooze/dismiss
-- [ ] `derived_reward` computation from event sequence
+- [ ] `HeartbeatService` wired to ranking pipeline (replace stubs)
+- [ ] FastAPI gateway: `POST /heartbeat`, `GET /api/stream`, notification inbox API
+- [ ] Web inbox UI with snooze/dismiss → `record_feedback`
+- [ ] FastMCP server: `run_heartbeat`, `record_feedback`, query tools
+- [ ] Claude Code `/loop` prompt wired to MCP heartbeat
+- [ ] Optional OS adapter (`OS_DELIVERY_ENABLED=true`)
+- [ ] `feedback_events` write + `derived_reward` computation
 - [ ] Snooze re-queue with context snapshot
 - [ ] Geo-anchor extraction + geofence trigger
 - [ ] Calendar pull mode (event title → cluster dossier)
@@ -550,10 +620,8 @@ Be explicit that real learning takes weeks; the simulator compresses it to 3 min
 - [ ] `POST /optimize` endpoint for Cloud Routine trigger
 
 ### Hour 12–18: Interfaces
-- [ ] FastAPI backend with SSE endpoint for live activity stream
-- [ ] Web dashboard: two-pane layout, Chart.js engagement chart, prompt diff view
-- [ ] FastMCP server with 4 tools
-- [ ] Claude Code `/loop` prompt wired to MCP tools
+- [ ] Web dashboard polish: engagement chart, prompt diff view, restraint budget controls
+- [ ] Web Push (stretch) for background browser notifications
 
 ### Hour 18–24: Simulator + Demo Prep
 - [ ] Synthetic persona + feedback event simulator
