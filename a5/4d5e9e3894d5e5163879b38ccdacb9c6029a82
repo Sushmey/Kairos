@@ -1,0 +1,23 @@
+docs/demo-readiness/VISION.md
+  s_9878790b1180ce::t_48c307014a6220 1-124
+docs/demo-readiness/DEMO_SCRIPT.md
+  s_9878790b1180ce::t_b4a46884940ed5 1-151
+docs/demo-readiness/FAQ.md
+  s_9878790b1180ce::t_bc0a9dddc2274c 20-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "a54d5e9e3894d5e5163879b38ccdacb9c6029a82",
+  "prompts": {},
+  "sessions": {
+    "s_9878790b1180ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "814afe08-6e85-4d71-bcf6-b1c20b0acf40",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Rohit Nair <6954311+rnair98@users.noreply.github.com>"
+    }
+  }
+}
