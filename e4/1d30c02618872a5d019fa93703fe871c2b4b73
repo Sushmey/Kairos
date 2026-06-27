@@ -1,0 +1,19 @@
+docs/ARCHITECTURE.md
+  s_bde4457754e18d::t_d2ea212ac22077 1-759
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "e41d30c02618872a5d019fa93703fe871c2b4b73",
+  "prompts": {},
+  "sessions": {
+    "s_bde4457754e18d": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "87e643fc-5b98-419f-89e1-4dae46b13bf2",
+        "model": "default"
+      },
+      "human_author": "Rohit Nair <6954311+rnair98@users.noreply.github.com>"
+    }
+  }
+}
