@@ -1,0 +1,108 @@
+src/kairos/web/app.py
+  s_bde4457754e18d::t_0c67d7be5bb009 1-17,19-97
+  s_bde4457754e18d::t_b55eaa2c0dd587 18
+src/kairos/core/rewards.py
+  s_bde4457754e18d::t_348a3b31f1431b 1-29
+pyproject.toml
+  s_bde4457754e18d::t_ee6940e647570c 19-20
+  s_bde4457754e18d::t_ad56cb3c6ba46f 36-38
+src/kairos/db/notifications.py
+  s_bde4457754e18d::t_2b2e5735a2f8e4 50-59
+  s_bde4457754e18d::t_2ad2fb78ff39ed 1,5-6,8-9,11,13-21,28-29,33-49
+  s_bde4457754e18d::t_7bca053297c0b4 22
+src/kairos/db/bookmarks.py
+  s_bde4457754e18d::t_c1a0106e6866d8 62-76
+src/kairos/core/feedback.py
+  s_bde4457754e18d::t_ed09f5d2063265 1-96
+src/kairos/core/bandit.py
+  s_bde4457754e18d::t_51dba77266beea 1-10
+src/kairos/core/heartbeat.py
+  s_bde4457754e18d::t_12794d035d90bb 26
+  s_bde4457754e18d::t_cb2771fbb6171d 6,8,42,58-75
+src/kairos/core/ranking.py
+  s_bde4457754e18d::t_e922f4ecf00426 5-15,17-20,23-58,60-75,79,83-86,91-138,140-160,166-167
+  s_bde4457754e18d::t_9ceb0e6cc24d3d 139
+  s_bde4457754e18d::t_57995a6333d09c 87-90
+  s_bde4457754e18d::t_8756c71a8299d0 16
+src/kairos/core/context.py
+  s_bde4457754e18d::t_88c69b1b673560 14-15
+src/kairos/agent/tools.py
+  s_bde4457754e18d::t_8f70531b645914 10-12,40-57,64-80
+  s_bde4457754e18d::t_5d371868cdccbf 116-119,121-127
+src/kairos/cli.py
+  s_bde4457754e18d::t_ccfbb61b40c2b2 250-258
+  s_bde4457754e18d::t_775fbee8e862c7 221-224
+  s_bde4457754e18d::t_be5f4709e7bb09 42-44
+  s_bde4457754e18d::t_b56c91bafd1b8f 226-238
+  s_bde4457754e18d::t_51a220b7a0e963 23-27
+  s_bde4457754e18d::t_f7fe7a15c79591 30-37
+src/kairos/db/bandit.py
+  s_bde4457754e18d::t_4ab6467619093a 36-45,49-52,54-55,60-65,68
+  s_bde4457754e18d::t_542b8ee95e8c0e 69-78
+  s_bde4457754e18d::t_ddcbf882fb1993 1-35
+  s_bde4457754e18d::t_c0f8712025da3a 46-48,53,56-59,66-67
+src/kairos/agent/harness.py
+  s_bde4457754e18d::t_0f11978352b7bf 18-21,24-27
+src/kairos/db/feedback.py
+  s_bde4457754e18d::t_6da98700c8e060 1-63,65-70
+  s_bde4457754e18d::t_8322c31e88e204 64
+src/kairos/config.py
+  s_bde4457754e18d::t_58fe4c725c99f2 49-50
+  s_bde4457754e18d::t_f5bcaa3c468695 51
+docs/demo-readiness/PHASE_REVIEWS.md
+  s_bde4457754e18d::t_b9ab5c6659df0e 207-261
+  s_bde4457754e18d::t_0255541ab47b9a 99-206
+docs/demo-readiness/DEMO_SCRIPT_GAPS.md
+  s_bde4457754e18d::t_a72ff40d1a6bf1 14-17
+  s_bde4457754e18d::t_4c73d9bbb0af96 31-36
+  s_bde4457754e18d::t_3e13297c4d44df 38,41-42,44-46,48-53,55-60,66,68-70
+  s_bde4457754e18d::t_b9d127c76a66bf 12-13,30,40,54,61-65,67
+src/kairos/core/moment.py
+  s_bde4457754e18d::t_da2787ce64b7bb 1-29
+src/kairos/db/clusters.py
+  s_bde4457754e18d::t_e352691a3d9d59 28-31
+src/kairos/web/server.py
+  s_bde4457754e18d::t_15a4f47caec5ba 1-18
+src/kairos/web/__init__.py
+  s_bde4457754e18d::t_bf0f660e2ceae0 1
+src/kairos/web/static/index.html
+  s_bde4457754e18d::t_3176d0ba637bce 171-173
+  s_bde4457754e18d::t_eed775b3671862 504-508,511
+  s_bde4457754e18d::t_e913ce4f434a92 582-587,591-706,710-717
+docs/demo-readiness/THEME_LOG.md
+  s_bde4457754e18d::t_48471f1d41c360 16-54
+  s_bde4457754e18d::t_0ab230ce8bbe39 10,14-15,55-71
+  s_bde4457754e18d::t_5569d826cf3eab 7-9
+  s_bde4457754e18d::t_1f0e87dea562f7 11-13
+docs/demo-readiness/FAQ.md
+  s_bde4457754e18d::t_ebfa245a5f1d4e 117,120
+  s_bde4457754e18d::t_12206a0bf3f5c7 54
+  s_bde4457754e18d::t_f5014897c3200d 102,105
+  s_bde4457754e18d::t_0e9253673a71ea 86
+  s_bde4457754e18d::t_7805983c8b6801 45,48-51
+  s_bde4457754e18d::t_b41e51550f2b41 89
+  s_bde4457754e18d::t_3a595613631ab8 114-116,119
+  s_bde4457754e18d::t_73eb82fa4de396 83-85
+  s_bde4457754e18d::t_da71afc7d8a944 87-88
+  s_bde4457754e18d::t_760ab461263a97 90-92
+.env.example
+  s_bde4457754e18d::t_d171ffd1edb722 35-36
+uv.lock
+  s_bde4457754e18d::t_581cfc7507b296 354-369,525-560,668,680,685,697,1993-2121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "3069bae17f8ae54b4c7fd8962f7720947fc21ec0",
+  "prompts": {},
+  "sessions": {
+    "s_bde4457754e18d": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "87e643fc-5b98-419f-89e1-4dae46b13bf2",
+        "model": "default"
+      },
+      "human_author": "Rohit Nair <6954311+rnair98@users.noreply.github.com>"
+    }
+  }
+}
