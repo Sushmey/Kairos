@@ -28,8 +28,10 @@ Kairos is a **contextual bandit**: at each candidate moment, score bookmark clus
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        INGEST LAYER                         │
-│  X bookmark export → LLM enrichment → MongoDB + embeddings  │
+│  X API GET /2/users/{id}/bookmarks (paginated sync)         │
+│  → normalize → LLM enrichment → MongoDB + embeddings          │
 │  HDBSCAN clustering → cluster summaries                     │
+│  (fallback: X data export for bootstrap without OAuth)      │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
@@ -113,17 +115,24 @@ Topical affinity determines **which cluster** to surface. Attention capacity det
 ```python
 {
   "_id": ObjectId(),
-  "url": str,
-  "raw_text": str,
+  "x_tweet_id": str,                  # unique upsert key from X API
+  "url": str,                         # https://x.com/i/web/status/{x_tweet_id}
+  "raw_text": str,                    # note_tweet.text if present, else tweet.text
+  "author_id": str,
+  "author_username": str,
+  "tweet_created_at": datetime,       # when the post was published (NOT bookmark time)
+  "context_annotations": list[dict], # X-inferred entities — seed for topic_tags
+  "referenced_tweets": list[dict],    # quoted/replied-to context (from expansions)
   "embedding": list[float],           # 384-dim, sentence-transformers all-MiniLM-L6-v2
   "cluster_id": ObjectId,             # assigned at ingest, updated nightly
-  "topic_tags": list[str],
+  "topic_tags": list[str],            # LLM-enriched
   "consumption_mode": str,            # read-deep | skim | watch | act-in-world | save-to-project
   "energy_cost": float,               # 0.0–1.0
   "geo_anchor": str | None,           # extracted place/product name
   "geo_coords": [float, float] | None,# [lat, lon]
   "perishability": str,               # evergreen | dated | time-sensitive
-  "created_at": datetime,
+  "ingested_at": datetime,
+  "last_synced_at": datetime,
   "last_surfaced_at": datetime | None,
   "surface_count": int,
 }
@@ -417,20 +426,82 @@ During the demo: Claude Code session stays open with Kairos MCP connected. The `
 | MCP server | FastMCP |
 | Calendar | Google Calendar API (OAuth2) |
 | Geo | `geopy` for geocoding, manual toggle for demo |
-| Bookmark ingest | X data export (not live API — see risk below) |
-| LLM | Claude claude-sonnet-4-6 via Anthropic SDK |
+| Bookmark ingest | X API v2 `GET /2/users/{id}/bookmarks` (OAuth2 user token) |
+| Bookmark bootstrap | X data export (fallback if OAuth/quota blocked) |
+| LLM | Gemini via Interactions API (`google-genai`) + Antigravity SDK harness |
 
 ---
 
-## X Bookmark Access — De-risk in Hour 1
+## X Bookmark Ingest
 
-The X API bookmark endpoint requires OAuth2 user-context, is rate-limited, and pricing has been volatile. **Do not architect around the live API.**
+Primary source: **[X API Get Bookmarks](https://docs.x.com/x-api/users/get-bookmarks)** — returns Posts bookmarked by the authenticated user.
 
-- Primary: X data export (Settings → Your Account → Download an archive)
-- Stretch: live sync via OAuth2 if quota allows
-- Demo: export is sufficient; judges will not care
+### Endpoint
 
-**Verify current API state before any other decision.**
+```
+GET https://api.x.com/2/users/{id}/bookmarks
+```
+
+| Parameter | Value |
+|-----------|-------|
+| `id` (path) | Authenticated user's numeric ID — **must match the OAuth token holder** |
+| `max_results` | 1–100 per page (paginate until `meta.next_token` absent) |
+| `pagination_token` | Base36 token from prior response `meta.next_token` |
+
+**Required OAuth2 scopes:** `bookmark.read`, `tweet.read`, `users.read`
+
+Auth flow: OAuth 2.0 authorization code via `https://api.x.com/2/oauth2/authorize` → token at `https://api.x.com/2/oauth2/token`. Store refresh token with `offline.access` scope for background sync.
+
+### Recommended field/expansion set
+
+Request these to maximize ingest quality without extra round-trips:
+
+```
+tweet.fields=created_at,entities,note_tweet,context_annotations,referenced_tweets,lang,attachments
+expansions=author_id,referenced_tweets.id,attachments.media_keys
+user.fields=username,name
+```
+
+**Text extraction rules:**
+- Long posts: prefer `note_tweet.text` over truncated `text`
+- Thread/quote context: merge expanded `includes.tweets` for referenced posts into enrichment input
+- URLs: extract from `entities.urls[].expanded_url` (prefer over t.co shortlinks)
+- Topic hints: pass `context_annotations` to LLM enrichment as weak priors for `topic_tags`
+
+**Known API limitation:** the endpoint returns Tweet objects, not bookmark timestamps. We store `tweet_created_at` (post publish time) and `ingested_at` / `last_synced_at` (our sync time). Do not infer "when user bookmarked this."
+
+### Sync strategy
+
+```
+Initial sync (Hour 0–1):
+  paginate all pages → upsert by x_tweet_id → enrich + embed new docs only
+
+Incremental sync (scheduled, e.g. daily or pre-demo):
+  paginate from page 1 → upsert by x_tweet_id
+  skip enrichment if doc exists and raw_text unchanged
+  re-cluster nightly if member set changed
+
+Error handling:
+  UsageCapExceededProblem → fall back to export bootstrap, log clearly
+  ClientForbiddenProblem    → check app enrollment / tier
+  ResourceUnavailableProblem → tweet deleted/suspended; mark doc unavailable
+```
+
+Unique index: `{ x_tweet_id: 1 }` on `bookmarks`.
+
+### Fallback: data export
+
+If OAuth setup or quota blocks live sync during the hackathon window:
+
+- Settings → Your Account → Download an archive → parse `bookmark.js` / tweet objects
+- Same normalization → enrichment → embed pipeline; map export tweet IDs to `x_tweet_id`
+- Demo still works; live sync is the production path
+
+**Hour 1 checklist:**
+1. Register X developer app, enable OAuth 2.0 user context
+2. Confirm `bookmark.read` scope on token
+3. One authenticated call returns paginated bookmarks
+4. Log rate-limit headers; note tier cap before building sync loop
 
 ---
 
@@ -450,8 +521,10 @@ Be explicit that real learning takes weeks; the simulator compresses it to 3 min
 ## Build Order
 
 ### Hour 0–2: Foundation
-- [ ] MongoDB Atlas setup, collections + vector search index
-- [ ] Ingest X bookmark export → `bookmarks` collection with embeddings
+- [ ] MongoDB Atlas setup, collections + vector search index (`x_tweet_id` unique)
+- [ ] X OAuth2 user-context flow + `GET /2/users/{id}/bookmarks` paginated sync client
+- [ ] Normalize tweets → upsert `bookmarks` (note_tweet text, expansions, context_annotations)
+- [ ] Export-parser fallback if API quota/OAuth blocked
 - [ ] LLM enrichment (batch, async): topic_tags, consumption_mode, energy_cost, geo_anchor, perishability
 - [ ] HDBSCAN clustering → populate `clusters` collection
 - [ ] **Eval harness first**: fixed context×cluster pairs with ground-truth from synthetic persona
@@ -494,7 +567,7 @@ Be explicit that real learning takes weeks; the simulator compresses it to 3 min
 - [ ] Desktop Scheduled Task setup for production path
 
 ### Hour 36–48: Buffer / Stretch
-- [ ] Live X API sync
+- [ ] Incremental X bookmark sync on schedule (refresh token, skip unchanged)
 - [ ] Additional sources (Pocket, Readwise export)
 
 ---
@@ -523,3 +596,4 @@ Be explicit that real learning takes weeks; the simulator compresses it to 3 min
 - MongoDB Atlas Vector Search: https://www.mongodb.com/docs/atlas/atlas-vector-search/
 - FastMCP: https://github.com/jlowin/fastmcp
 - Claude Code scheduled tasks: https://code.claude.com/docs/en/scheduled-tasks
+- X API Get Bookmarks: https://docs.x.com/x-api/users/get-bookmarks
