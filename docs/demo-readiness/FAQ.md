@@ -17,6 +17,24 @@ A: Everyone embeds bookmarks; nobody optimizes the **interruption policy** again
 
 ---
 
+## Why contextual bandits?
+
+**Q: Why contextual bandits — why not just ask an LLM to decide when to surface?**  
+A: An LLM deciding in real time has no memory of what it got wrong. Every heartbeat starts cold unless you inject past feedback into the prompt — at which point you're building an ad-hoc bandit with worse statistics. The α/β parameters on each cluster×context pair *are* the accumulated learning. They update in microseconds and explain themselves: `p(engage) = 0.84, sampled from Beta(12.4, 4.1)`. A judge can watch that change after a dismiss. An LLM making the same decision is a black box with no update path.
+
+**Q: Why not fine-tune Gemini on engagement data?**  
+A: Sparse feedback regime — tens of interactions per day per user, not thousands. Thompson sampling converges from 20–100 observations. Fine-tuning needs orders of magnitude more labeled pairs and resets on every model update. Bandits are specifically designed for this signal density.
+
+**Q: Why not just cosine similarity + a threshold?**  
+A: Cosine answers "which cluster is topically closest." It doesn't answer "given that I surfaced this cluster at 2pm on a dense-meeting day and the user dismissed it, should I surface it at 2pm tomorrow?" The bandit learns that negative signal. Cosine has no memory.
+
+**Q: Why not a memory system like Letta/MemGPT?**  
+A: Different problem. Letta optimizes what's *stored* — sleep-time memory consolidation. Kairos optimizes the *retrieval policy* against measured downstream behavioral outcomes. Letta makes memory cleaner; Kairos makes the interruption smarter. We use Gemini where language matters (enrichment, digest) and the bandit where statistics matter (when to interrupt).
+
+**One-liner:** "Bandits are the only class of algorithm that converges on sparse, delayed feedback without requiring a dataset we don't have."
+
+---
+
 ## vs alternatives
 
 **Q: Why not just search my bookmarks?**  
