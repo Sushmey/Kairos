@@ -16,6 +16,7 @@ from kairos.db.bookmarks import apply_embeddings_batch, list_all_bookmarks
 from kairos.db.clusters import ensure_cluster_indexes, list_clusters, replace_all_clusters
 from kairos.db.mongo import close_mongo, get_database
 from kairos.embeddings.encoder import bookmark_embed_text, encode_documents, effective_embedding_model
+from kairos.embeddings.similarity import cosine_similarity
 from kairos.bookmarks.fingerprints import embed_fingerprint
 from kairos.config import settings
 
@@ -124,6 +125,48 @@ def _cluster_summary(members: list[dict[str, Any]]) -> str:
     return " ".join(previews)
 
 
+async def _label_clusters_parallel(
+    grouped_items: list[tuple[int, list[dict[str, Any]]]],
+) -> list[tuple[str, str, bool]]:
+    """Label clusters concurrently (LLM or heuristic fallback)."""
+    sem = asyncio.Semaphore(settings.cluster_label_concurrency)
+
+    async def one(members: list[dict[str, Any]]) -> tuple[str, str, bool]:
+        async with sem:
+            if settings.cluster_naming_use_llm and settings.gemini_api_key:
+                from kairos.llm.generation import label_cluster
+
+                try:
+                    llm_label = await asyncio.to_thread(label_cluster, members)
+                    return llm_label.name, llm_label.summary, llm_label.evergreen
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("LLM cluster label failed: %s", exc)
+            return _cluster_name(members), _cluster_summary(members), False
+
+    return await asyncio.gather(*[one(members) for _, members in grouped_items])
+
+
+def _match_existing_cluster_id(
+    centroid: list[float],
+    existing: list[dict[str, Any]],
+    *,
+    threshold: float,
+) -> str | None:
+    """Reuse prior cluster_id when centroid is similar enough (preserves bandit params)."""
+    best_id: str | None = None
+    best_score = 0.0
+    for cluster in existing:
+        old = cluster.get("centroid_embedding")
+        cid = cluster.get("cluster_id")
+        if not old or not cid:
+            continue
+        score = cosine_similarity(centroid, old)
+        if score >= threshold and score > best_score:
+            best_score = score
+            best_id = cid
+    return best_id
+
+
 async def cluster_stored_bookmarks(
     *,
     min_cluster_size: int | None = None,
@@ -147,19 +190,33 @@ async def cluster_stored_bookmarks(
             settings.hdbscan_min_samples,
         )
 
+        existing_clusters = await list_clusters(limit=500)
+        reuse_threshold = settings.cluster_id_reuse_threshold
+
         now = datetime.now(timezone.utc)
         cluster_records: list[dict[str, Any]] = []
         label_to_cluster_id: dict[int, str] = {}
+        grouped_items = sorted(cluster_docs.items())
 
-        for label, members in sorted(cluster_docs.items()):
-            cluster_id = str(uuid4())
-            label_to_cluster_id[label] = cluster_id
+        label_results = await _label_clusters_parallel(grouped_items)
+
+        for (label, members), resolved in zip(grouped_items, label_results, strict=True):
+            name, summary, evergreen = resolved
             centroid = np.mean([doc["embedding"] for doc in members], axis=0).tolist()
+            cluster_id = _match_existing_cluster_id(
+                centroid,
+                existing_clusters,
+                threshold=reuse_threshold,
+            )
+            if not cluster_id:
+                cluster_id = str(uuid4())
+            label_to_cluster_id[label] = cluster_id
             cluster_records.append(
                 {
                     "cluster_id": cluster_id,
-                    "name": _cluster_name(members),
-                    "summary": _cluster_summary(members),
+                    "name": name,
+                    "summary": summary,
+                    "evergreen": evergreen,
                     "centroid_embedding": centroid,
                     "member_count": len(members),
                     "last_updated": now,
@@ -179,8 +236,9 @@ async def cluster_stored_bookmarks(
         result.clusters = len(cluster_records)
 
         db = get_database()
-        await db.bookmarks.update_many({}, {"$set": {"cluster_id": None}})
+        from pymongo import UpdateOne
 
+        ops: list[UpdateOne] = []
         clustered = 0
         noise = 0
         for doc, label in zip(embedded, labels, strict=True):
@@ -189,13 +247,14 @@ async def cluster_stored_bookmarks(
                 continue
             if label == -1:
                 noise += 1
+                ops.append(UpdateOne({"x_tweet_id": x_tweet_id}, {"$set": {"cluster_id": None}}))
                 continue
             cluster_id = label_to_cluster_id[label]
-            await db.bookmarks.update_one(
-                {"x_tweet_id": x_tweet_id},
-                {"$set": {"cluster_id": cluster_id}},
-            )
+            ops.append(UpdateOne({"x_tweet_id": x_tweet_id}, {"$set": {"cluster_id": cluster_id}}))
             clustered += 1
+
+        if ops:
+            await db.bookmarks.bulk_write(ops, ordered=False)
 
         result.clustered = clustered
         result.noise = noise

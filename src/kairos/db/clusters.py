@@ -13,6 +13,9 @@ COLLECTION = "clusters"
 async def ensure_cluster_indexes() -> None:
     db = get_database()
     await db[COLLECTION].create_index("cluster_id", unique=True)
+    from kairos.db.vector_search import ensure_vector_indexes
+
+    await ensure_vector_indexes()
 
 
 async def replace_all_clusters(clusters: list[dict[str, Any]]) -> int:

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import orjson
 import re
 import sys
 from pathlib import Path
@@ -94,7 +94,7 @@ async def main() -> int:
                 file=sys.stderr,
             )
         if exc.payload:
-            print(json.dumps(exc.payload, indent=2)[:2000], file=sys.stderr)
+            print(orjson.dumps(exc.payload, option=orjson.OPT_INDENT_2).decode()[:2000], file=sys.stderr)
         return 1
 
 

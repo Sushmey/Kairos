@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-import json
+import orjson
 
 from kairos.config import settings
-from kairos.llm.client import get_genai_client
+from kairos.llm.interactions import create_interaction
 from kairos.llm.grounding import parse_grounded_interaction
-from kairos.models.schemas import BookmarkEnrichment, ClusterDigest, ClusterDigestCore, ContextSnapshot
+from kairos.models.schemas import (
+    BookmarkEnrichment,
+    ClusterDigest,
+    ClusterDigestCore,
+    ClusterLabel,
+    ContextSnapshot,
+    DigestCritique,
+)
+from kairos.observability.bus import event_bus
 
 
 def _response_format_for(model: type) -> list[dict]:
@@ -19,13 +27,48 @@ def _response_format_for(model: type) -> list[dict]:
 
 
 _BOOKMARK_ENRICHMENT_FORMAT = _response_format_for(BookmarkEnrichment)
+_DIGEST_CRITIQUE_FORMAT = _response_format_for(DigestCritique)
+_DIGEST_CORE_FORMAT = _response_format_for(ClusterDigestCore)
+
+
+_CLUSTER_LABEL_FORMAT = _response_format_for(ClusterLabel)
+
+
+def label_cluster(members: list[dict]) -> ClusterLabel:
+    """Generate human-readable cluster name + summary from member bookmarks."""
+    snippets = "\n".join(
+        f"- {(doc.get('raw_text') or '')[:200]}" for doc in members[:6] if doc.get("raw_text")
+    )
+    tags: list[str] = []
+    for doc in members:
+        tags.extend(doc.get("topic_tags") or [])
+    tag_line = ", ".join(sorted(set(tags))[:12])
+    interaction = create_interaction(
+        label="cluster-label",
+        model=settings.gemini_flash_lite_model,
+        input=(
+            f"Topic tags: {tag_line or '(none)'}\n\n"
+            f"Bookmark samples:\n{snippets or '(empty)'}\n\n"
+            "Name this cluster (short, specific) and write a one-sentence summary."
+        ),
+        system_instruction=(
+            "You label bookmark topic clusters for a personal knowledge agent. "
+            "Name should be 2-5 words; summary captures the shared theme. "
+            "evergreen=true for timeless reference material (architecture, fundamentals, "
+            "evergreen tutorials) that does not benefit from news-style web grounding."
+        ),
+        response_format=_CLUSTER_LABEL_FORMAT,
+        store=False,
+    )
+    payload = interaction.output_text or '{"name": "Cluster", "summary": ""}'
+    return ClusterLabel.model_validate_json(payload)
 
 
 def enrich_bookmark(raw_text: str, url: str) -> BookmarkEnrichment:
     """Extract bookmark metadata via structured output."""
-    client = get_genai_client()
     max_chars = settings.enrich_max_input_chars
-    interaction = client.interactions.create(
+    interaction = create_interaction(
+        label="bookmark-enrich",
         model=settings.gemini_flash_lite_model,
         input=(
             "Classify this bookmark.\n\n"
@@ -44,6 +87,13 @@ def enrich_bookmark(raw_text: str, url: str) -> BookmarkEnrichment:
     return BookmarkEnrichment.model_validate_json(payload)
 
 
+_DEFAULT_DIGEST_PROMPT = (
+    "Write a cluster digest for surfacing via web inbox or host agent chat. "
+    "why_now: one line explaining timing fit (gap, location, calendar). "
+    "links: up to 5 entries with url placeholder '#', label, consumption_mode."
+)
+
+
 def _structured_cluster_digest(
     cluster_id: str,
     cluster_name: str,
@@ -51,13 +101,15 @@ def _structured_cluster_digest(
     bookmark_snippets: list[str],
     context: ContextSnapshot,
     member_count: int,
+    *,
+    prompt_override: str | None = None,
 ) -> ClusterDigest:
     """Core digest fields from bookmarks + context (no web search)."""
-    client = get_genai_client()
     context_json = context.model_dump_json()
     snippets = "\n".join(f"- {s[:300]}" for s in bookmark_snippets[:8])
 
-    interaction = client.interactions.create(
+    interaction = create_interaction(
+        label="digest-core",
         model=settings.gemini_model,
         input=(
             f"Cluster: {cluster_name}\n"
@@ -65,16 +117,12 @@ def _structured_cluster_digest(
             f"Bookmarks:\n{snippets}\n\n"
             f"Context:\n{context_json}"
         ),
-        system_instruction=(
-            "Write a cluster digest for surfacing via web inbox or host agent chat. "
-            "why_now: one line explaining timing fit (gap, location, calendar). "
-            "links: up to 5 entries with url placeholder '#', label, consumption_mode."
-        ),
-        response_format=_response_format_for(ClusterDigestCore),
+        system_instruction=prompt_override or _DEFAULT_DIGEST_PROMPT,
+        response_format=_DIGEST_CORE_FORMAT,
         store=False,
     )
     payload = interaction.output_text or "{}"
-    data = json.loads(payload)
+    data = orjson.loads(payload)
     data.setdefault("cluster_id", cluster_id)
     data.setdefault("cluster_name", cluster_name)
     data.setdefault("member_count", member_count)
@@ -87,7 +135,6 @@ def _ground_digest_with_search(
     bookmark_snippets: list[str],
 ) -> ClusterDigest:
     """Enrich digest with timely web context via Google Search grounding."""
-    client = get_genai_client()
     snippets = "\n".join(f"- {s[:200]}" for s in bookmark_snippets[:5])
     context_bits = [
         f"location={context.location_type}",
@@ -98,7 +145,8 @@ def _ground_digest_with_search(
     if context.recent_event_title:
         context_bits.append(f"recent_event={context.recent_event_title}")
 
-    interaction = client.interactions.create(
+    interaction = create_interaction(
+        label="digest-ground",
         model=settings.gemini_model,
         input=(
             f"Cluster topic: {digest.cluster_name}\n"
@@ -130,6 +178,103 @@ def _ground_digest_with_search(
     )
 
 
+def _critique_digest(
+    digest: ClusterDigest,
+    context: ContextSnapshot,
+    bookmark_snippets: list[str],
+) -> DigestCritique:
+    """LLM critique of draft digest quality and moment fit."""
+    snippets = "\n".join(f"- {s[:200]}" for s in bookmark_snippets[:5])
+    interaction = create_interaction(
+        label="digest-critique",
+        model=settings.gemini_flash_lite_model,
+        input=(
+            f"Draft digest:\n{digest.model_dump_json()}\n\n"
+            f"User moment:\n{context.model_dump_json()}\n\n"
+            f"Bookmarks:\n{snippets or '(none)'}\n\n"
+            "Critique whether this digest is strong enough to interrupt the user. "
+            "strong_enough=false if why_now is generic, summary is vague, or timing "
+            "connection is weak."
+        ),
+        system_instruction=(
+            "Be a harsh editor. List specific issues and revision_hints for improvement."
+        ),
+        response_format=_DIGEST_CRITIQUE_FORMAT,
+        store=False,
+    )
+    payload = interaction.output_text or '{"strong_enough": true, "issues": [], "revision_hints": ""}'
+    critique = DigestCritique.model_validate_json(payload)
+    if critique.strong_enough:
+        critique_msg = "Digest critique passed — strong enough to interrupt."
+    else:
+        issues = "; ".join(critique.issues[:3]) if critique.issues else "needs revision"
+        critique_msg = f"Digest critique flagged issues — {issues}."
+    event_bus.emit(
+        "intelligence",
+        critique_msg,
+        strong_enough=critique.strong_enough,
+        issues=critique.issues,
+    )
+    return critique
+
+
+def _revise_digest(
+    digest: ClusterDigest,
+    critique: DigestCritique,
+    context: ContextSnapshot,
+    bookmark_snippets: list[str],
+) -> ClusterDigest:
+    """Revise digest using critique feedback."""
+    snippets = "\n".join(f"- {s[:300]}" for s in bookmark_snippets[:8])
+    interaction = create_interaction(
+        label="digest-revise",
+        model=settings.gemini_model,
+        input=(
+            f"Original digest:\n{digest.model_dump_json()}\n\n"
+            f"Critique issues: {critique.issues}\n"
+            f"Revision hints: {critique.revision_hints}\n\n"
+            f"User moment:\n{context.model_dump_json()}\n\n"
+            f"Bookmarks:\n{snippets}\n\n"
+            "Revise summary and why_now to address the critique. Keep links unchanged."
+        ),
+        system_instruction=(
+            "Produce a sharper, more moment-specific digest. why_now must cite concrete "
+            "timing signals (gap, location, calendar, email themes)."
+        ),
+        response_format=_DIGEST_CORE_FORMAT,
+        store=False,
+    )
+    payload = interaction.output_text or "{}"
+    data = orjson.loads(payload)
+    data.setdefault("cluster_id", digest.cluster_id)
+    data.setdefault("cluster_name", digest.cluster_name)
+    data.setdefault("member_count", digest.member_count)
+    revised = ClusterDigest.model_validate(
+        {**digest.model_dump(), **data, "web_context": digest.web_context, "citations": digest.citations}
+    )
+    event_bus.emit("intelligence", "Revised digest after critique to sharpen timing and relevance.")
+    return revised
+
+
+def _infer_digest_style(
+    digest: ClusterDigest,
+    context: ContextSnapshot,
+    evergreen: bool,
+    was_grounded: bool,
+    was_revised: bool,
+) -> str:
+    """Derive GAMBITTS treatment bucket from digest characteristics."""
+    if evergreen and not was_grounded:
+        return "evergreen"
+    if was_grounded:
+        return "grounded"
+    if was_revised:
+        return "revised"
+    if context.upcoming_event_title or context.topical_affinity == "work":
+        return "context_primed"
+    return "standard"
+
+
 def generate_cluster_digest(
     cluster_id: str,
     cluster_name: str,
@@ -138,8 +283,21 @@ def generate_cluster_digest(
     context: ContextSnapshot,
     *,
     member_count: int = 0,
+    evergreen: bool = False,
+    prompt_override: str | None = None,
 ) -> ClusterDigest:
-    """Generate digest copy, optionally enriched with Google Search grounding."""
+    """Compose cluster digest — fast single call or multi-step with search/critique."""
+    if settings.intelligence_digest_runtime_fast:
+        return _structured_cluster_digest(
+            cluster_id,
+            cluster_name,
+            cluster_summary,
+            bookmark_snippets,
+            context,
+            member_count,
+            prompt_override=prompt_override,
+        )
+
     digest = _structured_cluster_digest(
         cluster_id,
         cluster_name,
@@ -147,7 +305,18 @@ def generate_cluster_digest(
         bookmark_snippets,
         context,
         member_count,
+        prompt_override=prompt_override,
     )
-    if settings.digest_use_google_search:
+    skip_search = evergreen and settings.digest_skip_search_evergreen
+    was_grounded = False
+    if settings.digest_use_google_search and not skip_search:
         digest = _ground_digest_with_search(digest, context, bookmark_snippets)
-    return digest
+        was_grounded = bool(digest.web_context)
+    was_revised = False
+    if settings.intelligence_digest_multistep:
+        critique = _critique_digest(digest, context, bookmark_snippets)
+        if not critique.strong_enough and critique.revision_hints:
+            digest = _revise_digest(digest, critique, context, bookmark_snippets)
+            was_revised = True
+    style = _infer_digest_style(digest, context, evergreen, was_grounded, was_revised)
+    return digest.model_copy(update={"digest_style": style})

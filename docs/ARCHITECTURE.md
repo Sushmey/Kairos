@@ -13,10 +13,11 @@ flowchart TB
     subgraph Entry["Entry points"]
         CLI["CLI<br/><code>kairos</code>"]
         WebUI["Web dashboard<br/><code>kairos serve</code>"]
-        Agent["Agent harness<br/><code>agent-cycle</code>"]
+        Agent["ADK agent<br/><code>agent-cycle</code>"]
     end
 
     subgraph Policy["Policy plane"]
+        Intel["Intelligence layer<br/><code>core/intelligence.py</code>"]
         HS["HeartbeatService"]
         Rank["Ranking pipeline"]
         Ctx["Context sensor"]
@@ -43,14 +44,16 @@ flowchart TB
     WebUI --> HS
     Agent --> HS
 
-    HS --> Ctx
+    HS --> Intel
+    Intel --> Ctx
     HS --> Rank
     HS --> Del
     HS --> Mongo
 
     Rank --> Embed
     Rank --> Gemini
-    Ctx -.->|"planned"| Calendar["Google Calendar MCP"]
+    Intel --> Gemini
+    Ctx -->|"sync / fuse"| Calendar["Google Calendar + Gmail"]
 
     Ingest --> XAPI
     Ingest --> Gemini
@@ -73,7 +76,8 @@ flowchart TB
 |-------|----------------|-------------|
 | **Ingest** | Pull X bookmarks, normalize, enrich | `ingest/`, `bookmarks/enrich.py` |
 | **Index** | Embed, cluster, fingerprint stale rows | `embeddings/`, `bookmarks/index.py` |
-| **Context** | Headspace vector at decision time | `core/context.py`, `core/moment.py` |
+| **Context** | Headspace vector at decision time | `core/context.py`, `core/headspace.py`, `core/moment.py` |
+| **Intelligence** | Gemini enrichment before policy | `core/intelligence.py`, `llm/compose.py`, `llm/generation.py` |
 | **Policy** | Rank, gate, surface or silence | `core/ranking.py`, `core/bandit.py` |
 | **Delivery** | Fan-out to web, OS, host transcript | `delivery/` |
 | **Feedback** | Implicit signals → online bandit | `core/feedback.py`, `db/feedback.py` |
@@ -83,7 +87,7 @@ flowchart TB
 
 ## 1. Ingest layer
 
-Pulls bookmarks from X, normalizes API payloads, enriches with Gemini metadata, and upserts into MongoDB.
+Pulls bookmarks from X, normalizes API payloads, and upserts into MongoDB. **Enrichment is off during sync by default** — run `kairos bookmarks prep` or `kairos bookmarks enrich` separately.
 
 ```mermaid
 flowchart LR
@@ -93,13 +97,14 @@ flowchart LR
         Norm["normalize_bookmark<br/><code>ingest/x/normalize.py</code>"]
     end
 
-    subgraph Sync["Sync orchestration"]
-        SyncFn["sync_bookmarks_from_x<br/><code>ingest/sync.py</code>"]
-        EnrichInline["enrich_bookmark_documents<br/><code>ingest/enrich.py</code>"]
+    subgraph Sync["Sync + prep"]
+        SyncFn["sync_bookmarks_from_x<br/>(raw upsert)"]
+        Prep["kairos bookmarks prep<br/><code>bookmarks/pipeline.py</code>"]
+        EnrichAPI["enrich + research<br/><code>bookmarks/enrich.py</code>"]
     end
 
     subgraph LLM["Gemini"]
-        EnrichAPI["enrich_bookmark<br/><code>llm/generation.py</code>"]
+        Gen["generation.py"]
     end
 
     subgraph Store["MongoDB"]
@@ -109,15 +114,15 @@ flowchart LR
     OAuth --> Client
     Client -->|"paginated GET /bookmarks"| Norm
     Norm --> SyncFn
-    SyncFn --> EnrichInline
-    EnrichInline --> EnrichAPI
-    EnrichAPI -->|"topic_tags, energy_cost,<br/>consumption_mode"| SyncFn
     SyncFn -->|"upsert by x_tweet_id"| BM
+    Prep --> EnrichAPI
+    EnrichAPI --> Gen
+    Gen --> BM
 ```
 
 **Enrichment output** (`BookmarkEnrichment`): topic tags, consumption mode, energy cost, geo anchor, perishability.
 
-**CLI:** `kairos x auth`, `kairos x sync`, `kairos bookmarks enrich`
+**CLI:** `kairos x auth`, `kairos x sync`, `kairos bookmarks prep` (preferred), `kairos bookmarks enrich`
 
 ---
 
@@ -162,110 +167,134 @@ flowchart TB
     CL -->|"member_count, centroid"| BM2
 ```
 
-**Incremental pipeline** (`bookmarks/pipeline.py`): sync → enrich → embed → cluster (skips re-cluster when fingerprints unchanged).
+**Incremental pipeline** (`bookmarks/pipeline.py`): optional X sync → enrich → research → embed → cluster. Skips re-cluster when no new embeddings and no unclustered rows. Stable cluster IDs when centroid reuse ≥ `CLUSTER_ID_REUSE_THRESHOLD`.
 
-**CLI:** `kairos bookmarks embed`, `kairos bookmarks cluster`, `kairos bookmarks clusters`
+**Background prep:** `POST /api/prep/start` → `dispatch_prep_job` (FastAPI background or Arq worker). Status in Mongo `prep_jobs`.
+
+**CLI:** `kairos bookmarks prep`, `kairos bookmarks embed`, `kairos bookmarks cluster`, `kairos bookmarks clusters`
 
 ---
 
-## 3. Context sensor
+## 3. Context sensor + intelligence layer
 
-Two dimensions drive the policy: **topical affinity** (what you're oriented toward) and **attention capacity** (whether interrupt is feasible).
+Two dimensions drive the policy: **topical affinity** (what you're oriented toward) and **attention capacity** (whether interrupt is feasible). Raw sensors are fused heuristically, then **Gemini enriches** the snapshot before ranking.
 
 ```mermaid
 flowchart TB
     subgraph Sources["Signal sources"]
-        Cal["Google Calendar<br/>🚧 planned"]
-        Loc["Location toggle<br/>🚧 planned"]
-        Demo["Demo persona stub<br/><code>core/context.py</code>"]
+        Cal["Google Calendar API / MCP"]
+        Gmail["Gmail API / MCP"]
+        Loc["Location / geofence"]
+        Demo["Demo persona stub"]
     end
 
-    subgraph Snapshot["ContextSnapshot<br/><code>models/schemas.py</code>"]
-        Topical["Topical affinity<br/>upcoming/recent events<br/>location_type"]
-        Capacity["Attention capacity<br/>calendar_gap_minutes<br/>meeting_density_today<br/>surfaces_today"]
+    subgraph Fuse["Heuristic fuse<br/><code>core/headspace.py</code>"]
+        Parse["parse_calendar_events<br/>email theme extraction"]
     end
 
-    subgraph Bucket["Context bucketing<br/><code>core/moment.py</code>"]
-        Class["context_class<br/>e.g. cafe_long_gap"]
-        Moment["moment_text<br/>→ query embedding"]
+    subgraph Intel["Intelligence layer<br/><code>llm/compose.py</code>"]
+        Enrich["enrich_headspace_from_sensors<br/>enrich_context_narrative"]
+        Narrative["moment_narrative"]
     end
 
-    Cal -.-> Snapshot
-    Loc -.-> Snapshot
-    Demo --> Snapshot
-    Snapshot --> Class
-    Snapshot --> Moment
+    subgraph Snapshot["ContextSnapshot"]
+        Topical["topical_affinity · email_themes"]
+        Capacity["attention_capacity · calendar_gap"]
+        Moment["moment_narrative → ranking query"]
+    end
+
+    Cal --> Fuse
+    Gmail --> Fuse
+    Loc --> Fuse
+    Demo --> Fuse
+    Fuse --> Intel
+    Intel --> Snapshot
 ```
 
 | Field | Role |
 |-------|------|
-| `calendar_gap_minutes` | Gate: min gap before interrupt |
-| `location_type` | Topical mode (desk, cafe, gym, …) |
+| `calendar_gap_minutes` | Hard gate: min gap before interrupt |
+| `moment_narrative` | LLM-composed query text for vector match (replaces template `moment_text`) |
+| `topical_affinity` / `attention_capacity` | LLM-refined modes (heuristic fallback) |
 | `surfaces_today` | Daily budget / fatigue |
-| `time_since_last_surface_minutes` | Min gap between surfaces |
+
+**Sync paths:** `sync_google_headspace` and `fuse_headspace_context` call `fuse_headspace_intelligent` when `INTELLIGENCE_HEADSPACE_ENABLED=true`. Every heartbeat tick runs `prepare_context_for_decision` to compose `moment_narrative` if missing.
 
 ---
 
 ## 4. Ranking pipeline
 
-The thesis lives here: moment → cluster fit × learned bandit weight → interrupt gate → digest or silence.
+The thesis lives here: enriched moment → cluster fit × learned bandit weight → hard gates → **LLM moment-fit** → multi-step digest or silence.
 
 ```mermaid
 flowchart TB
-    Start([evaluate_surface]) --> Snooze["Filter snoozed clusters<br/><code>db/feedback.py</code>"]
-    Snooze --> EmbedQ["encode_query(moment_text)<br/><code>embeddings/encoder.py</code>"]
+    Start([evaluate_surface]) --> Snooze["Filter snoozed clusters"]
+    Snooze --> EmbedQ["encode_query(moment_narrative)<br/><code>core/moment.py</code>"]
 
     EmbedQ --> Loop{{"For each cluster"}}
     Loop --> Cosine["cosine(moment_vec, centroid)"]
-    Cosine --> TS["Thompson sample α,β<br/><code>core/bandit.py</code>"]
+    Cosine --> TS["Thompson sample α,β"]
     TS --> Adj["adjusted = vector × bandit_weight"]
     Adj --> Best["Pick best cluster"]
 
-    Best --> Gate{"Interrupt gate"}
+    Best --> Gate{"Hard interrupt gate"}
     Gate --> G1["daily_budget"]
     Gate --> G2["calendar_gap"]
     Gate --> G3["min_gap since last surface"]
     Gate --> G4["score_threshold"]
 
-    G1 & G2 & G3 & G4 --> Decision{all pass?}
-    Decision -->|no| OK["KAIROS_OK<br/>SurfaceDecision.should_surface=false"]
-    Decision -->|yes| Digest["generate_cluster_digest<br/><code>llm/generation.py</code>"]
+    G1 & G2 & G3 & G4 --> HardOK{all pass?}
+    HardOK -->|no| OK["KAIROS_OK"]
+    HardOK -->|yes| Fit["check_moment_fit<br/><code>llm/compose.py</code>"]
+    Fit --> FitOK{fit?}
+    FitOK -->|no| OK
+    FitOK -->|yes| Digest["Multi-step digest<br/>draft → search → critique → revise"]
     Digest --> Links["Merge real bookmark URLs"]
-    Links --> Surface["SURFACE<br/>+ ClusterDigest"]
+    Links --> Surface["SURFACE + ClusterDigest"]
 
-    OK --> Emit["EventBus: activity"]
+    OK --> Emit["EventBus"]
     Surface --> Emit
 ```
 
 ```mermaid
 sequenceDiagram
     participant HS as HeartbeatService
-    participant Ctx as read_context
+    participant Intel as prepare_context_for_decision
     participant Rank as evaluate_surface
     participant Emb as encode_query
     participant Band as bandit_params
+    participant Fit as check_moment_fit
     participant LLM as generate_cluster_digest
 
-    HS->>Ctx: ContextSnapshot
-    Ctx-->>HS: cafe, 90min gap, …
-    HS->>Rank: context, override?
-    Rank->>Emb: moment_text(context)
+    HS->>Intel: ContextSnapshot
+    Intel-->>HS: + moment_narrative
+    HS->>Rank: enriched context
+    Rank->>Emb: moment_text → narrative
     Emb-->>Rank: moment vector
     loop each cluster
-        Rank->>Band: get_bandit_params(cluster, context_class)
-        Band-->>Rank: α, β
+        Rank->>Band: get_bandit_params
         Rank->>Rank: adjusted = cosine × Thompson(α,β)
     end
-    alt gates pass
-        Rank->>LLM: snippets + context
-        LLM-->>Rank: ClusterDigest (+ optional Google Search)
-        Rank-->>HS: should_surface=true
+    alt hard gates pass
+        Rank->>Fit: cluster + snippets + context
+        Fit-->>Rank: fit / reason
+        alt moment fit
+            Rank->>LLM: draft → search → critique → revise
+            LLM-->>Rank: ClusterDigest
+            Rank-->>HS: should_surface=true
+        else moment misfit
+            Rank-->>HS: should_surface=false
+        end
     else gates fail
         Rank-->>HS: should_surface=false
     end
 ```
 
-**Module map:** `core/ranking.py` · `core/bandit.py` · `core/moment.py` · `db/bandit.py` · `db/clusters.py`
+**Module map:** `core/ranking.py` · `core/bandit.py` · `core/moment.py` · `llm/compose.py` · `llm/generation.py` · `db/bandit.py`
+
+**Policy vs intelligence:** bandit + hard gates stay deterministic. Gemini adds narrative enrichment (every tick), moment-fit check (surface path only), and digest quality (surface path only).
+
+**Performance:** budget/gap gates run before vector encode + bandit batch fetch; moment-fit and digest only run when hard gates + score threshold pass. Cluster and bookmark ranking use Atlas `$vectorSearch` when indexes exist, with in-memory cosine fallback. Evergreen clusters skip Google Search grounding during digest (`digest_skip_search_evergreen`). Snooze is scoped per **user × context_class**.
 
 ---
 
@@ -276,7 +305,8 @@ Single orchestrator for every runtime path — CLI, web, agent, MCP.
 ```mermaid
 stateDiagram-v2
     [*] --> ReadContext: run()
-    ReadContext --> Evaluate: evaluate_surface()
+    ReadContext --> Enrich: prepare_context_for_decision()
+    Enrich --> Evaluate: evaluate_surface()
     Evaluate --> KairosOK: not should_surface
     Evaluate --> Persist: should_surface
     Persist --> Deliver: save_notification()
@@ -304,18 +334,21 @@ flowchart LR
 
     subgraph Deps
         Ctx["read_context"]
+        Intel["prepare_context_for_decision"]
         Rank["evaluate_surface"]
         Save["save_notification"]
         Del["deliver"]
         Proc["process_feedback"]
     end
 
-    Run --> Ctx --> Rank
+    Run --> Ctx --> Intel --> Rank
     Rank -->|SURFACE| Save --> Del
     FB --> Proc
 ```
 
-**Contract:** `HeartbeatResult` — same shape for HTTP, CLI JSON, and future MCP.
+**Contract:** `HeartbeatResult` — same shape for HTTP, CLI JSON, MCP, and ADK agent.
+
+All entry points (web, CLI, MCP `run_heartbeat`, ADK `agent-cycle`) call `HeartbeatService`, which runs the intelligence layer before policy. ADK orchestrates sensors + tools; policy + intelligence stay in the Python core.
 
 ---
 
@@ -359,7 +392,7 @@ flowchart TB
 
 ## 7. Feedback loop + contextual bandit
 
-Online learning without LLM fine-tuning. Snooze ≠ dismiss.
+Online learning without LLM fine-tuning. Snooze ≠ dismiss. Bandit params are keyed by **user × cluster × context_class** (`user_id` from session or `KAIROS_USER_ID`).
 
 ```mermaid
 flowchart TB
@@ -429,7 +462,7 @@ flowchart LR
 
 ## 8. Observability + web gateway
 
-In-process pub/sub streams agent activity to the dashboard admin panel.
+In-process pub/sub streams agent activity to the dashboard admin panel. When `EVENT_PERSIST_ENABLED=true`, events are also written to Mongo `pipeline_events` (TTL) so CLI/MCP heartbeats appear in the admin log after browser refresh.
 
 ```mermaid
 flowchart TB
@@ -439,7 +472,8 @@ flowchart TB
         Ctx["context.py"]
         Del["WebDeliveryAdapter"]
         FB["record_feedback"]
-        Agent["agent/hooks.py"]
+        Intel["llm/compose.py"]
+        Agent["agent/agent.py callbacks"]
     end
 
     subgraph Bus["EventBus<br/><code>observability/bus.py</code>"]
@@ -469,48 +503,82 @@ flowchart TB
     FeedbackAPI --> FB
 ```
 
-**Event kinds:** `session`, `context`, `activity`, `indicator`, `notification`, `feedback`, `turn`, `cluster`, `search`
+**Event kinds:** `session`, `context`, `intelligence`, `activity`, `indicator`, `notification`, `feedback`, `turn`, `tool_call`, `cluster`, `search`
 
 ---
 
-## 9. Agent harness
+## 9. ADK agent + MCP
 
-Two runtime paths share `HeartbeatService`.
+**ADK agent** (`kairos agent-cycle` or `heartbeat --via-agent`) fetches Calendar/Gmail via **Workspace MCP**, calls `fuse_headspace_context`, then `run_heartbeat`. **Kairos MCP** (`kairos mcp`) exposes policy tools directly — use `sync_google_headspace` for Calendar/Gmail fetch + fuse. Both call the same `HeartbeatService`.
 
 ```mermaid
 flowchart TB
-    subgraph Direct["Direct path (default)"]
-        CLI1["kairos heartbeat"]
-        API["POST /api/heartbeat"]
-        Harness["run_decision_cycle<br/><code>agent/harness.py</code>"]
+    subgraph Host["MCP host (Claude Code)"]
+        Loop["/loop 5m"]
     end
 
-    subgraph AgentPath["Agent path"]
-        CLI2["kairos agent-cycle"]
-        AG["Antigravity Agent"]
-        Gemini["Gemini model"]
-        Tools["agent/tools.py"]
-        Hooks["agent/hooks.py → EventBus"]
+    subgraph ADK["ADK agent path"]
+        AG["LlmAgent<br/><code>agent/agent.py</code>"]
+        CalMCP["Calendar MCP"]
+        GmailMCP["Gmail MCP"]
     end
 
-    HS["HeartbeatService"]
+    subgraph KairosMCP["Kairos MCP tools"]
+        RH["run_heartbeat"]
+        RF["record_feedback"]
+        Fuse["fuse_headspace_context"]
+    end
 
-    CLI1 --> Harness --> HS
-    API --> Harness
-    CLI2 --> AG --> Gemini
-    Gemini --> Tools
-    Tools --> HS
-    AG --> Hooks
+    subgraph Core["Shared core"]
+        Intel["Intelligence layer"]
+        HS["HeartbeatService"]
+    end
+
+    Loop --> AG
+    AG --> CalMCP
+    AG --> GmailMCP
+    AG --> Fuse
+    AG --> RH
+    Loop --> RH
+    RH --> Intel --> HS
+    RF --> HS
 ```
 
-| Tool | Status | Purpose |
+Direct CLI and web paths skip ADK orchestration but run the same intelligence + policy:
+
+```mermaid
+flowchart TB
+    subgraph Direct["Direct path"]
+        CLI1["kairos heartbeat"]
+        API["POST /api/heartbeat"]
+        MCP["kairos mcp → run_heartbeat"]
+    end
+
+    subgraph AgentPath["ADK path"]
+        CLI2["kairos agent-cycle"]
+        AG["LlmAgent + Workspace MCP"]
+    end
+
+    subgraph Core["Shared core"]
+        Intel["prepare_context_for_decision"]
+        HS["HeartbeatService"]
+    end
+
+    CLI1 --> HS
+    API --> HS
+    MCP --> HS
+    CLI2 --> AG --> RH["run_heartbeat"] --> HS
+    HS --> Intel
+```
+
+| Tool (MCP + harness) | Status | Purpose |
 |------|--------|---------|
 | `run_heartbeat` | ✅ | Policy cycle |
-| `get_current_context` | ✅ | Headspace vector |
-| `get_cluster_summary` | ✅ | Topic → cluster lookup |
 | `record_feedback` | ✅ | Bandit update |
-| `get_relevant_bookmarks` | 🚧 stub | Search (not thesis) |
-| `ingest_bookmark` | ✅ | Manual URL ingest |
+| `get_current_context` | ✅ | Headspace (stub until Calendar MCP wired) |
+| `get_cluster_summary` | ✅ | Topic → cluster lookup |
+| `get_relevant_bookmarks` | ✅ | Semantic search over bookmark index (not thesis) |
+| `add_bookmark` | — | Not exposed; use `kairos x sync` |
 
 ---
 
@@ -521,14 +589,19 @@ mindmap
   root((kairos))
     Policy
       heartbeat
+      heartbeat --via-agent
       feedback
       agent-cycle
-      chat
+      optimize run|readiness|eval
     Web
       serve
+      mcp
+      worker
     Bookmarks
+      prep
       list
       enrich
+      research
       embed
       cluster
       clusters
@@ -593,53 +666,82 @@ erDiagram
     }
 
     bandit_params {
+        string user_id
         string cluster_id
         string context_class
         float alpha
         float beta
         datetime last_updated
     }
+
+    prep_jobs {
+        string job_id UK
+        string status
+        object params
+        object result
+    }
+
+    pipeline_events {
+        datetime timestamp
+        string kind
+        string message
+        object data
+    }
+
+    optimization_runs {
+        datetime run_at
+        string prompt_before
+        string prompt_after
+        float engagement_delta
+    }
 ```
 
-**Planned (P7):** `optimization_runs` — GEPA prompt diffs from nightly eval.
+Collections also include `context_cache`, `google_tokens`, and `optimization_runs` (GEPA prompt diffs).
 
 ---
 
 ## 12. LLM layer
 
-All structured generation goes through the Gemini Interactions API.
+Structured generation uses the Gemini Interactions API. The **intelligence layer** runs on every heartbeat tick and on the surface path.
 
 ```mermaid
 flowchart LR
     subgraph Callers
         IngestEnrich["bookmark enrich"]
-        Digest["cluster digest"]
-        Ground["Google Search grounding"]
+        Headspace["headspace compose"]
+        MomentFit["moment fit check"]
+        Digest["multi-step digest"]
     end
 
     subgraph LLM["llm/"]
-        Client["client.py<br/>get_genai_client"]
+        Client["client.py"]
+        Compose["compose.py"]
         Gen["generation.py"]
         GroundMod["grounding.py"]
     end
 
     subgraph Models
-        Lite["gemini-3.1-flash-lite<br/>enrichment"]
-        Flash["gemini-3.5-flash<br/>digest"]
-        EmbedM["gemini-embedding-001<br/>vectors"]
+        Lite["gemini-3.1-flash-lite<br/>headspace · fit · critique"]
+        Flash["gemini-3.5-flash<br/>digest draft · revise"]
+        EmbedM["gemini-embedding-001"]
     end
 
     IngestEnrich --> Gen --> Lite
+    Headspace --> Compose --> Lite
+    MomentFit --> Compose --> Lite
     Digest --> Gen --> Flash
-    Ground --> GroundMod --> Flash
+    Digest --> Compose --> Lite
+    Gen --> GroundMod
     EmbedM -.->|"embeddings/"| EmbedEnc["gemini_encoder.py"]
 ```
 
-**Digest modes:** structured `ClusterDigestCore` + optional `DIGEST_USE_GOOGLE_SEARCH` for live web context.
+**Digest pipeline:** structured draft → optional Google Search grounding → LLM critique → revise if weak (`INTELLIGENCE_DIGEST_MULTISTEP`).
+
+**Env flags:** `INTELLIGENCE_HEADSPACE_ENABLED`, `INTELLIGENCE_MOMENT_FIT_CHECK`, `INTELLIGENCE_DIGEST_MULTISTEP`, `DIGEST_USE_GOOGLE_SEARCH`.
 
 ---
 
-## 13. Self-improvement (planned P7)
+## 13. Self-improvement
 
 ```mermaid
 flowchart TB
@@ -649,9 +751,9 @@ flowchart TB
         TS["Thompson sampling"]
     end
 
-    subgraph Offline["Offline — planned"]
-        Eval["Eval harness<br/>fixed context×cluster pairs"]
-        GEPA["GEPA nightly pass"]
+    subgraph Offline["Offline — shipped (manual trigger)"]
+        Eval["Eval harness<br/>fixed context×cluster fixtures"]
+        GEPA["GEPA reflection pass<br/>kairos optimize / POST /api/optimize"]
         OR["optimization_runs<br/>prompt diffs"]
     end
 
@@ -667,7 +769,7 @@ flowchart TB
     TS --> Online
 ```
 
-**Honest scope:** policy RSI at the application layer (bandit + prompt meta-optimization). No LLM weight training.
+**Not yet automated:** nightly Cloud Run cron for GEPA when `gepa_ready` (see [TECH_DEBT.md](TECH_DEBT.md) P3).
 
 ---
 
@@ -695,6 +797,7 @@ sequenceDiagram
 
     Note over User,Bandit: Policy plane (heartbeat loop)
     User->>Heartbeat: kairos heartbeat / POST /api/heartbeat
+    Heartbeat->>Heartbeat: prepare_context_for_decision
     Heartbeat->>Rank: evaluate_surface
     Rank->>Mongo: clusters, bandit_params
     Rank-->>Heartbeat: SURFACE + digest
@@ -726,6 +829,15 @@ Central settings in `config.py` (env + `.env`):
 | `MIN_CALENDAR_GAP_MINUTES` | `30` | Attention capacity gate |
 | `SNOOZE_TTL_MINUTES` | `120` | Snooze exclusion window |
 | `DIGEST_USE_GOOGLE_SEARCH` | `true` | Ground digest with web |
+| `INTELLIGENCE_HEADSPACE_ENABLED` | `true` | LLM headspace + moment narrative |
+| `INTELLIGENCE_MOMENT_FIT_CHECK` | `true` | LLM gate before digest |
+| `INTELLIGENCE_DIGEST_MULTISTEP` | `true` | Critique + revise digest (off when runtime fast) |
+| `INTELLIGENCE_DIGEST_RUNTIME_FAST` | `false` | Single LLM digest call at surface (demo: `true`) |
+| `CLUSTER_ID_REUSE_THRESHOLD` | `0.88` | Keep cluster_id when centroid matches |
+| `EVENT_PERSIST_ENABLED` | `true` | Persist pipeline events to Mongo for SSE replay |
+| `JOB_BACKEND` | `local` | `local` or `arq` for prep jobs |
+| `HEARTBEAT_DEFAULT_VIA_AGENT` | `false` | Web heartbeat uses ADK when true |
+| `GEPA_ENABLED` | `true` | Enable GEPA reflection pass |
 | `DELIVERY_TARGETS` | `web` | Adapter fan-out |
 
 ---
@@ -736,24 +848,30 @@ Central settings in `config.py` (env + `.env`):
 src/kairos/
 ├── cli.py                 # CLI entry
 ├── config.py              # Settings
-├── agent/                 # Antigravity harness + tools
-├── bookmarks/             # Enrich, embed, cluster, pipeline
-├── core/                  # Policy: context, ranking, bandit, feedback
+├── agent/                 # ADK agent + MCP tools
+├── bookmarks/             # Enrich, research, embed, cluster, pipeline, prep jobs
+├── jobs/                  # Arq worker + dispatch (optional queue)
+├── core/                  # Policy + intelligence: context, ranking, bandit, optimize
+│   ├── intelligence.py    # fuse_headspace_intelligent, prepare_context
+│   └── eval_harness.py    # GEPA fixture eval
+├── models/                # Pydantic: schemas, jobs, optimize
+├── llm/                   # Gemini generation, compose, interactions
 ├── db/                    # MongoDB repositories
 ├── delivery/              # Web + OS adapters
 ├── embeddings/            # Local + Gemini encoders
 ├── ingest/                # X OAuth, sync, normalize
-├── llm/                   # Gemini generation + grounding
-├── models/                # Pydantic schemas
-├── observability/         # EventBus
-└── web/                   # FastAPI + static dashboard
+├── observability/         # EventBus + Mongo pipeline_events
+├── web/                   # FastAPI + static dashboard
+└── mcp/                   # FastMCP server (stdio)
 ```
 
 ---
 
 ## Related docs
 
-- [PLAN.md](../PLAN.md) — product thesis and build order
+- [PLAN.md](../PLAN.md) — product thesis and original build order
+- [TECH_DEBT.md](TECH_DEBT.md) — simplification roadmap + what's next
+- [LOCAL_QUEUE.md](LOCAL_QUEUE.md) — optional Arq prep queue
+- [demo-readiness/DEMO.md](demo-readiness/DEMO.md) — stage runbook
 - [demo-readiness/FAQ.md](demo-readiness/FAQ.md) — judge Q&A
-- [demo-readiness/PHASE_REVIEWS.md](demo-readiness/PHASE_REVIEWS.md) — adversarial phase log
-- [demo-readiness/THEME_LOG.md](demo-readiness/THEME_LOG.md) — hackathon theme proofs
+- [archive/](archive/) — hackathon phase logs + research notes

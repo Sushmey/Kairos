@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import orjson
 from typing import Any
 
 from kairos.db.bookmarks import count_bookmarks, get_by_x_tweet_id, list_bookmarks
@@ -90,4 +90,4 @@ def format_bookmarks_table(result: dict[str, Any]) -> str:
 
 
 def format_bookmarks_json(result: dict[str, Any]) -> str:
-    return json.dumps(result, indent=2)
+    return orjson.dumps(result, option=orjson.OPT_INDENT_2).decode()

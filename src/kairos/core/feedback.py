@@ -6,7 +6,7 @@ import logging
 
 from kairos.core.moment import context_class
 from kairos.core.rewards import reward_for_action
-from kairos.db.bandit import apply_bandit_reward, ensure_bandit_indexes
+from kairos.db.bandit import apply_bandit_reward, apply_treatment_reward, ensure_bandit_indexes
 from kairos.db.feedback import ensure_feedback_indexes, insert_feedback_event
 from kairos.db.mongo import close_mongo
 from kairos.db.notifications import get_notification, update_notification_status
@@ -30,6 +30,7 @@ async def process_feedback(
     action: FeedbackAction,
     *,
     url: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
     """Write feedback_events and apply online bandit update when appropriate."""
     try:
@@ -39,6 +40,12 @@ async def process_feedback(
         record = await get_notification(notification_id)
         if record is None:
             return {"status": "error", "message": f"unknown notification {notification_id}"}
+
+        if user_id is not None and record.user_id:
+            from kairos.db.bandit import bandit_user_id
+
+            if record.user_id != bandit_user_id(user_id):
+                return {"status": "error", "message": "notification not found for this user"}
 
         if not record.cluster_id or not record.context_snapshot:
             return {
@@ -59,11 +66,17 @@ async def process_feedback(
             derived_reward=reward,
             notification_text=markdown,
             url=url,
+            user_id=record.user_id,
         )
 
         bandit_after: dict | None = None
         if reward is not None:
-            bandit_after = await apply_bandit_reward(record.cluster_id, ctx_class, reward)
+            bandit_after = await apply_bandit_reward(
+                record.cluster_id,
+                ctx_class,
+                reward,
+                user_id=record.user_id,
+            )
             logger.info(
                 "Bandit update cluster=%s context=%s reward=%s alpha=%s beta=%s",
                 record.cluster_id[:8],
@@ -71,6 +84,15 @@ async def process_feedback(
                 reward,
                 bandit_after["alpha"],
                 bandit_after["beta"],
+            )
+            # GAMBITTS-lite: secondary update keyed on digest treatment style
+            digest_style = (record.digest and record.digest.digest_style) or "standard"
+            await apply_treatment_reward(
+                record.cluster_id,
+                ctx_class,
+                digest_style,
+                reward,
+                user_id=record.user_id,
             )
 
         status = _STATUS_FOR_ACTION.get(action, "pending")

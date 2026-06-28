@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kairos — How it works</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; background: #FAFAF8; color: #111; }
+    .font-serif { font-family: 'Instrument Serif', Georgia, serif; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+    @keyframes flowPulse {
+      0%, 100% { opacity: 0.35; transform: scaleX(0.92); }
+      50% { opacity: 1; transform: scaleX(1); }
+    }
+    @keyframes nodeGlow {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(196, 146, 42, 0); border-color: #E5E7EB; }
+      50% { box-shadow: 0 0 24px 2px rgba(196, 146, 42, 0.25); border-color: #C4922A; }
+    }
+    @keyframes fadeSlide {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .flow-line { animation: flowPulse 2s ease-in-out infinite; transform-origin: left; }
+    .node-active { animation: nodeGlow 2s ease-in-out infinite; }
+    .step-caption { animation: fadeSlide 0.4s ease forwards; }
+
+    .pipeline-arrow::after {
+      content: '→';
+      color: #9CA3AF;
+      margin: 0 0.35rem;
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+  <header class="border-b border-[#E5E7EB] px-8 py-5 flex items-center justify-between">
+    <div>
+      <a href="/" class="text-lg font-medium tracking-tight hover:text-[#C4922A]">kairos</a>
+      <span class="text-[#9CA3AF] text-sm ml-2">/ how it works</span>
+    </div>
+    <a href="/" class="text-sm text-[#6B7280] hover:text-[#111]">← Dashboard</a>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-8 py-12" x-data="walkthrough()" x-init="start()">
+    <h1 class="font-serif text-4xl mb-2">From bookmark to interrupt</h1>
+    <p class="text-[#6B7280] mb-10 max-w-2xl leading-relaxed">
+      Kairos learns <em>when</em> to surface saved topics — not just what you saved.
+      This page animates the two phases: <strong>prep</strong> (batch, once) and <strong>heartbeat</strong> (runtime, every cycle).
+    </p>
+
+    <!-- Animated pipeline -->
+    <div class="bg-white border border-[#E5E7EB] rounded-2xl p-8 mb-10">
+      <p class="text-[10px] font-semibold text-[#9CA3AF] uppercase tracking-widest mb-6" x-text="phaseLabel"></p>
+
+      <div class="flex flex-wrap items-center gap-2 mb-8 text-sm font-medium">
+        <template x-for="(node, i) in activeNodes" :key="node.id">
+          <span class="flex items-center">
+            <span
+              class="px-3 py-2 rounded-lg border transition-all duration-300"
+              :class="i === step ? 'node-active border-[#C4922A] bg-[#FAF6EE]' : 'border-[#E5E7EB] bg-[#FAFAFA] text-[#6B7280]'"
+              x-text="node.label"
+            ></span>
+            <span x-show="i < activeNodes.length - 1" class="pipeline-arrow text-[#9CA3AF] mx-1"></span>
+          </span>
+        </template>
+      </div>
+
+      <div class="h-1 bg-[#F3F4F6] rounded-full mb-6 overflow-hidden">
+        <div class="h-full bg-[#C4922A] flow-line transition-all duration-500" :style="'width:' + progress + '%'"></div>
+      </div>
+
+      <div class="step-caption min-h-[4.5rem]">
+        <p class="font-serif italic text-xl text-[#374151] mb-2" x-text="currentDetail.title"></p>
+        <p class="text-sm text-[#6B7280] leading-relaxed" x-text="currentDetail.body"></p>
+        <p x-show="currentDetail.api" class="mt-3 font-mono text-xs text-[#9A6B12] bg-[#FAF6EE] inline-block px-2 py-1 rounded" x-text="currentDetail.api"></p>
+      </div>
+
+      <div class="flex gap-3 mt-6">
+        <button @click="prev()" class="px-4 py-2 text-sm border border-[#E5E7EB] rounded-lg hover:border-[#9CA3AF]">← Back</button>
+        <button @click="next()" class="px-4 py-2 text-sm bg-[#111] text-white rounded-lg hover:bg-[#2a2a2a]" x-text="step >= maxStep ? 'Restart' : 'Next →'"></button>
+        <button @click="playing = !playing; if(playing) tick()" class="px-4 py-2 text-sm text-[#6B7280] hover:text-[#111]" x-text="playing ? 'Pause' : 'Auto-play'"></button>
+      </div>
+    </div>
+
+    <!-- API map -->
+    <section class="mb-10">
+      <h2 class="font-serif text-2xl mb-4">Dashboard ↔ API</h2>
+      <div class="overflow-x-auto border border-[#E5E7EB] rounded-xl bg-white">
+        <table class="w-full text-sm">
+          <thead class="bg-[#FAFAFA] text-left text-[#6B7280] text-xs uppercase tracking-wider">
+            <tr>
+              <th class="px-4 py-3">You click / see</th>
+              <th class="px-4 py-3">HTTP</th>
+              <th class="px-4 py-3">What happens</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-[#F3F4F6]">
+            <tr><td class="px-4 py-3">Page load + listening</td><td class="px-4 py-3 font-mono text-xs">GET /api/config<br>POST /api/heartbeat</td><td class="px-4 py-3 text-[#6B7280]">Reads demo flags; auto-cycle unless demo mode</td></tr>
+            <tr><td class="px-4 py-3">Surface now</td><td class="px-4 py-3 font-mono text-xs">POST /api/demo/surface</td><td class="px-4 py-3 text-[#6B7280]">Reset headspace + one policy cycle</td></tr>
+            <tr><td class="px-4 py-3">Digest card appears</td><td class="px-4 py-3 font-mono text-xs">SSE /api/stream</td><td class="px-4 py-3 text-[#6B7280]">kind=notification with digest JSON</td></tr>
+            <tr><td class="px-4 py-3">Admin pipeline log</td><td class="px-4 py-3 font-mono text-xs">SSE /api/stream</td><td class="px-4 py-3 text-[#6B7280]">kind=pipeline, intelligence, activity</td></tr>
+            <tr><td class="px-4 py-3">Not relevant / Snooze</td><td class="px-4 py-3 font-mono text-xs">POST /api/feedback</td><td class="px-4 py-3 text-[#6B7280]">Bandit β updates; notification status changes</td></tr>
+            <tr><td class="px-4 py-3">Sidebar clusters</td><td class="px-4 py-3 font-mono text-xs">GET /api/clusters</td><td class="px-4 py-3 text-[#6B7280]">HDBSCAN groups from prep embed/cluster</td></tr>
+            <tr><td class="px-4 py-3">Bookmark cards in digest</td><td class="px-4 py-3 font-mono text-xs">kairos bookmarks prep<br>POST /api/prep/start</td><td class="px-4 py-3 text-[#6B7280]">Prep: enrich → research → embed → cluster</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <script>
+    function walkthrough() {
+      const prep = [
+        { id: 'x', label: 'X API', title: 'Sync bookmarks', body: 'kairos ingest sync pulls your saved tweets into MongoDB — raw text, URLs, author.', api: 'CLI: kairos ingest sync' },
+        { id: 'enrich', label: 'Enrich', title: 'Classify each bookmark', body: 'Gemini adds topic tags, consumption mode, energy cost.', api: 'just demo-corpus → enrich' },
+        { id: 'fetch', label: 'Link fetch', title: 'Read the article', body: 'HTTP fetch follows t.co → extracts title, description, body excerpt.', api: 'bookmarks/research.py + link_fetch.py' },
+        { id: 'research', label: 'Research', title: 'Summarize for cards', body: 'Gemini writes research_summary + validation signal — persisted so prep is not repeated.', api: 'kairos bookmarks research' },
+        { id: 'embed', label: 'Embed', title: 'Vectorize', body: 'Each bookmark gets an embedding for similarity search.', api: 'kairos bookmarks embed' },
+        { id: 'cluster', label: 'Cluster', title: 'Group topics', body: 'HDBSCAN builds topic clusters — what the bandit chooses between.', api: 'kairos bookmarks cluster' },
+      ];
+      const runtime = [
+        { id: 'ctx', label: 'Headspace', title: 'Read context', body: 'Calendar gap, location, fatigue counters, optional Google sync.', api: 'GET /api/context' },
+        { id: 'rank', label: 'Rank', title: 'Match moment → cluster', body: 'Embed the moment narrative; vector search + Thompson sampling.', api: 'SSE: pipeline' },
+        { id: 'gate', label: 'Gates', title: 'Interrupt policy', body: 'Daily budget, min gap, score threshold, optional moment-fit.', api: 'SSE: activity (gate_reasons)' },
+        { id: 'digest', label: 'Digest', title: 'Compose surface', body: 'Gemini writes cluster summary + why-now; merges researched bookmark cards.', api: 'SSE: intelligence' },
+        { id: 'deliver', label: 'Deliver', title: 'Inbox + SSE', body: 'Notification saved; UI receives digest via stream.', api: 'SSE: notification' },
+        { id: 'learn', label: 'Learn', title: 'Feedback loop', body: 'Dismiss/snooze updates bandit β — visible in Admin panel.', api: 'POST /api/feedback' },
+      ];
+
+      return {
+        phase: 'prep',
+        step: 0,
+        playing: true,
+        timer: null,
+        get activeNodes() { return this.phase === 'prep' ? prep : runtime; },
+        get maxStep() { return this.activeNodes.length - 1; },
+        get currentDetail() { return this.activeNodes[this.step] || {}; },
+        get phaseLabel() { return this.phase === 'prep' ? 'Phase 1 — Prep (batch, run once)' : 'Phase 2 — Heartbeat (runtime)'; },
+        get progress() { return ((this.step + 1) / (this.maxStep + 1)) * 100; },
+        start() { this.tick(); },
+        tick() {
+          clearInterval(this.timer);
+          if (!this.playing) return;
+          this.timer = setInterval(() => this.next(), 3500);
+        },
+        next() {
+          if (this.step >= this.maxStep) {
+            if (this.phase === 'prep') { this.phase = 'runtime'; this.step = 0; }
+            else { this.phase = 'prep'; this.step = 0; }
+            return;
+          }
+          this.step++;
+        },
+        prev() {
+          if (this.step > 0) this.step--;
+          else if (this.phase === 'runtime') { this.phase = 'prep'; this.step = prep.length - 1; }
+        },
+      };
+    }
+  </script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-"""Agent harness — Antigravity SDK for orchestration."""
+"""Agent harness — Google ADK for orchestration."""
 
 from kairos.agent.harness import (
     run_decision_cycle,

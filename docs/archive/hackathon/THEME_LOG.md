@@ -69,3 +69,37 @@ Official tracks:
 **Next (max 2):**
 1. P7: real GEPA + `optimization_runs` to replace mock GEPA panel
 2. P8: 30s pitch + live browser adaptation beat on stage
+
+---
+
+## Phase MCP — FastMCP Server — 2026-06-27
+
+| Theme | Score | Proof artifact | Pitch line |
+|-------|-------|----------------|------------|
+| Continual Learning | PROVEN | `record_feedback` + `run_heartbeat` via MCP stdio | "Claude Code dismisses in chat → bandit β updates — same loop as the web inbox." |
+| Self-Improvement Stack | PROVEN | MCP tools + existing EventBus/SSE/MongoDB stack | "Host transcript + persisted feedback_events — eval-ready from any MCP client." |
+| Recursive Intelligence | NONE | — | "GEPA still P7; Kairos MCP is policy only." |
+
+**Strongest theme this phase:** Continual Learning — feedback path now works in browser, CLI, **and** MCP hosts
+**Weakest theme / judge risk:** Calendar context still stub unless Google Workspace Calendar MCP is configured separately
+**Verdict:** THEME-READY — agent-native demo path unlocked; calendar is a **second MCP server** per PLAN.md
+**Next (max 2):**
+1. Configure Google Calendar MCP + agent prompt protocol
+2. Rehearse Claude Code `/loop` with Kairos MCP
+
+---
+
+## Phase A.5 — Sensors + multi-user + gym — 2026-06-27
+
+| Theme | Score | Proof artifact | Pitch line |
+|-------|-------|----------------|------------|
+| Continual Learning | PARTIAL | Persona gym (`kairos sim run`) drives the real bandit; `/api/metrics` engagement curve from `feedback_events`; per-user `bandit_params` | "Across 14 simulated days and 3 lifestyles, engagement climbs as the policy learns each persona's right moment." |
+| Self-Improvement Stack | PARTIAL→PROVEN | `db/metrics.py` aggregation + `/api/metrics` curve; gym as eval harness; `db/vector_search.py` real $vectorSearch | "The gym is our evaluation harness — we replay synthetic lifestyles through the real policy and watch convergence." |
+| Recursive Intelligence | NONE | — | "Still policy + (planned) prompt only; no weights. GEPA is the next loop." |
+
+**Strongest theme this phase:** Self-Improvement Stack — the gym is genuine evaluation infrastructure, not a slide.
+**Weakest theme / judge risk:** Continual Learning demo is **blocked live** by the `read_context` asyncio bug; curve is real but the single-user dismiss beat won't run until fixed. Recursive Intelligence still absent (GEPA unbuilt).
+**Verdict:** THEME-GAP — primary theme (Continual Learning) regressed to non-demonstrable live despite strong infrastructure.
+**Next (max 2):**
+1. Fix heartbeat blocker so the live dismiss→learn beat runs
+2. Build GEPA loop (`optimization_runs`) to give Recursive Intelligence an honest PARTIAL

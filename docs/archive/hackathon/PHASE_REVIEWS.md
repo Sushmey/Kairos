@@ -259,3 +259,97 @@ Append-only. Each entry from `kairos-adversarial-judge` skill after a developmen
 1. Rehearse browser path: serve → heartbeat → dismiss → admin SSE + bandit panel  
 2. Hide or wire mock sidebar (context/clusters/GEPA) before judge demo  
 3. Commit P4+P5+P6 core  
+
+---
+
+## Phase MCP — FastMCP Server — 2026-06-27
+
+**Shipped:** `kairos mcp` CLI (stdio + SSE); `src/kairos/mcp/server.py` FastMCP wrapper over `ALL_TOOLS` (6 tools); `docs/MCP_SETUP.md` + example JSON for Claude Code / Cursor.
+
+**Thesis alignment:** strong — host agents can now drive the policy loop without shelling to CLI. Instructions encode silence-as-feature and `return_only` delivery for chat hosts.
+
+**Demo-ready:** partial — tools list verified (`run_heartbeat`, `record_feedback`, …); live Claude Code `/loop` not rehearsed on stage yet. Pair with Google Workspace Calendar MCP (separate server) for live schedule context.
+
+### Rubric (0–2)
+
+| Dimension | Score | Note |
+|-----------|-------|------|
+| Thesis fidelity | 2 | MCP exposes interrupt policy, not search |
+| Demo provability | 1 | 6 tools registered; end-to-end in Claude Code unproven live |
+| Learning loop | 2 | `record_feedback` exposed with full action enum |
+| Silence as feature | 2 | Server instructions: KAIROS_OK is valid |
+| Feedback quality | 2 | All FeedbackAction values reachable via MCP |
+| Code cost | 2 | ~40 lines + CLI; reuses ALL_TOOLS |
+| Honest gaps | 2 | Docs mark stub tools; Calendar MCP documented as external |
+| Consumer value | 1 | Value realized only when host agent completes loop |
+
+**Total: 14/16** — MCP milestone met; agent-native demo path unlocked.
+
+### Findings
+
+| Severity | Finding | Recommendation |
+|----------|---------|----------------|
+| 🟡 gap | **Google Calendar MCP not configured** — `get_current_context` still returns demo stub | Configure `calendarmcp.googleapis.com` in host; agent calls `list_events` before heartbeat |
+| 🟡 gap | Stub tools exposed (`get_relevant_bookmarks`, `add_bookmark`) | Hide from MCP or implement before agent demo |
+| 🟡 gap | Mock web UI unchanged (sidebar, GEPA panel) | P0 hide/wire before browser demo |
+| 🟡 gap | No live Claude Code `/loop` rehearsal recorded | Run once with `delivery=return_only` before stage |
+| 🟢 nit | `mcp` added as direct dep (was transitive via antigravity) | Good — explicit for server |
+| 🟢 nit | SSE transport on port 8421 for debug | Optional; stdio is primary |
+
+### Code cost audit
+
+- **Keep:** `mcp/server.py`, thin wrapper pattern, MCP_SETUP docs
+- **Cut or defer:** HTTP MCP until needed; don't duplicate tools in MCP layer
+- **Missing for demo:** Calendar MCP OAuth setup + agent prompt protocol
+
+### FAQ additions
+
+- Q: Is there a Kairos MCP server? → A: ✅ `uv run kairos mcp` — stdio FastMCP over policy tools.
+- Q: How does Claude Code run heartbeats? → A: Add kairos to MCP config; `/loop` calls `run_heartbeat(delivery='return_only')`.
+
+**Verdict:** **SHIP**
+
+**Next (max 3):**
+
+1. Google Workspace Calendar MCP setup + agent prompt (list_events → heartbeat)  
+2. Hide mock web UI widgets before judge demo  
+3. Rehearse Claude Code `/loop` with Kairos MCP  
+
+---
+
+## Phase A.5 — Headspace sensors + multi-user + vector search (Cursor expansion) — 2026-06-27
+
+**Shipped:** Real headspace fusion (`core/headspace.py` from Calendar/Gmail/geo → `topical_affinity` + `attention_capacity`), `context_cache` persistence, Google Workspace OAuth package (`google/*`, `google connect/verify/auth-check`), ADK agent migration (`agent/config.py`+`hooks.py` deleted → `agent/agent.py`), Atlas `$vectorSearch` with in-memory fallback (`db/vector_search.py`), **multi-user bandit** (user_id-scoped `bandit_params`/`feedback_events`/`notifications`), LLM moment-fit gate (`llm/compose.py`), fatigue accounting (`core/fatigue.py`), Cloud Run Dockerfile. Plus the persona **gym** (`sim/*`, `kairos sim run/reset`) and real `/api/metrics`.
+
+**Thesis alignment:** strong — multi-user + gym + richer context all serve "learn when to interrupt." But scope ballooned (12 new modules, 3 new subsystems) well past P6 in one uncommitted batch.
+
+**Demo-ready:** **NO — regression.** A nested-event-loop bug breaks every live heartbeat.
+
+### Findings
+
+| Severity | Finding | Recommendation |
+|----------|---------|----------------|
+| 🔴 blocker | `read_context()` (`core/context.py:57`) calls `asyncio.run()`; `heartbeat.run()` (async) calls it sync at `heartbeat.py:28` → `RuntimeError: asyncio.run() cannot be called from a running event loop`. **Confirmed empirically.** Breaks `kairos heartbeat`, `POST /api/heartbeat`, agent-cycle. Gym path unaffected (bypasses `read_context`). | One-line fix: `heartbeat.run` should `await get_context_async(user_id)` not `read_context(user_id)`. |
+| 🟡 gap | Gym ↔ live bandit are disconnected on two axes: (a) user_id scope (gym=`sim:alex`, live=`__default__`); (b) `context_class` mismatch — gym keys lack the `topical_affinity` suffix (`desk_short_gap` vs live `desk_long_gap_work`). Gym never pre-trains the live bandit. | Gym `sample_context` should call `fuse_headspace`; demo as a sim persona, or document the separation. Act 3 metrics curve is unaffected (reads `feedback_events`). |
+| 🟡 gap | `intelligence_moment_fit_check=True` adds a 2nd sequential Gemini call per SURFACE (moment-fit, then digest) → 20–40s latency live. | Disable for demo (`INTELLIGENCE_MOMENT_FIT_CHECK=false`) or run the fit-check concurrently. |
+| 🟡 gap | Agent tools (`get_current_context`/`set_context`/`fuse_headspace_context`/`run_heartbeat`) repeat the `asyncio.run` pattern — safe only if ADK invokes tools in worker threads. | Verify ADK threading or convert to async tools. |
+| 🟢 nit | `metrics.py` counts engagement via exact float match `derived_reward in [0.4,0.8,1.0]`. | Use `derived_reward > 0`. |
+
+### Code cost audit
+
+- **Keep:** vector_search (real $vectorSearch + fallback), gym, metrics, multi-user bandit, headspace fusion.
+- **Cut or defer:** moment-fit LLM gate (latency, not demo-critical); Google Workspace OAuth is a lot of surface for one demo — verify `google verify` actually fires before relying on it.
+- **Missing for demo:** the blocker fix; one committed checkpoint (18 modified + 25 untracked files uncommitted).
+
+### FAQ additions
+
+- Q: Is the bandit per-user? → A: ✅ `bandit_params` keyed `user_id × cluster × context_class`; gym personas and live demo are separate namespaces.
+- Q: Does heartbeat work right now? → A: ❌ Blocked by a nested-asyncio bug in `read_context`; one-line fix pending.
+
+**Verdict:** **FIX-BEFORE-NEXT** — 🔴 on Demo provability (rubric dim 2). Do not add features until the heartbeat runs.
+
+**Next (max 3):**
+
+1. Fix the `read_context` nested-loop blocker; smoke `kairos heartbeat` end-to-end  
+2. Disable moment-fit gate for demo; re-measure surface latency  
+3. Commit this batch as thematic checkpoints before more scope  

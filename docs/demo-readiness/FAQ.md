@@ -1,19 +1,15 @@
 # Kairos Demo FAQ
 
-Living wiki for judges, rehearsal, and adversarial phase reviews.  
-**Update after every phase review** (see `.cursor/skills/kairos-adversarial-judge/`).
+Judge deep-dive (bandit vs RAG, Letta, etc.). Pitch and runbook: [DEMO.md](./DEMO.md).
 
-Legend: ✅ built · 🚧 stub/partial · ❌ not yet
+Legend: ✅ built · 🚧 partial · ❌ not yet
 
 ---
 
-## Elevator pitch
+## Onboarding (engineers)
 
-**Q: What is Kairos?**  
-A: A contextual bandit that learns **when** to surface bookmark *clusters*, not a search tool. Silence (`KAIROS_OK`) is the default; interrupt only when calendar, location, and learned engagement align.
-
-**Q: One-sentence thesis?**  
-A: Everyone embeds bookmarks; nobody optimizes the **interruption policy** against measured attention and lets it rewrite itself.
+**Q: I'm new — how does the dashboard connect to the backend?**  
+A: Open **http://127.0.0.1:8420/walkthrough** after `just demo-serve` — animated prep → heartbeat flow with an API map. Full reference: [DEVELOPER_GUIDE.md](../DEVELOPER_GUIDE.md). Optional Manim video: `manimgl scripts/manim/kairos_flow.py KairosFlow` ([3b1b/manim](https://github.com/3b1b/manim)).
 
 ---
 
@@ -22,14 +18,14 @@ A: Everyone embeds bookmarks; nobody optimizes the **interruption policy** again
 **Q: Why contextual bandits — why not just ask an LLM to decide when to surface?**  
 A: An LLM deciding in real time has no memory of what it got wrong. Every heartbeat starts cold unless you inject past feedback into the prompt — at which point you're building an ad-hoc bandit with worse statistics. The α/β parameters on each cluster×context pair *are* the accumulated learning. They update in microseconds and explain themselves: `p(engage) = 0.84, sampled from Beta(12.4, 4.1)`. A judge can watch that change after a dismiss. An LLM making the same decision is a black box with no update path.
 
-**Q: Why not fine-tune Gemini on engagement data?**  
+**Q: Why not fine-tune an LLM on engagement data?**  
 A: Sparse feedback regime — tens of interactions per day per user, not thousands. Thompson sampling converges from 20–100 observations. Fine-tuning needs orders of magnitude more labeled pairs and resets on every model update. Bandits are specifically designed for this signal density.
 
 **Q: Why not just cosine similarity + a threshold?**  
 A: Cosine answers "which cluster is topically closest." It doesn't answer "given that I surfaced this cluster at 2pm on a dense-meeting day and the user dismissed it, should I surface it at 2pm tomorrow?" The bandit learns that negative signal. Cosine has no memory.
 
 **Q: Why not a memory system like Letta/MemGPT?**  
-A: Different problem. Letta optimizes what's *stored* — sleep-time memory consolidation. Kairos optimizes the *retrieval policy* against measured downstream behavioral outcomes. Letta makes memory cleaner; Kairos makes the interruption smarter. We use Gemini where language matters (enrichment, digest) and the bandit where statistics matter (when to interrupt).
+A: Different problem. Letta optimizes what's *stored* — sleep-time memory consolidation. Kairos optimizes the *retrieval policy* against measured downstream behavioral outcomes. Letta makes memory cleaner; Kairos makes the interruption smarter. We use LLMs where language matters (enrichment, digest) and the bandit where statistics matter (when to interrupt).
 
 **One-liner:** "Bandits are the only class of algorithm that converges on sparse, delayed feedback without requiring a dataset we don't have."
 
@@ -65,17 +61,32 @@ A: ✅ `kairos heartbeat --delivery return_only` → `SURFACE` with cluster dige
 **Q: Does the bandit learn?**  
 A: ✅ `kairos feedback --action dismissed` writes `feedback_events` and updates `bandit_params` α/β (e.g. β += 0.4 on dismiss). Thompson sampling reads updated weights on next heartbeat.
 
+**Q: Is the bandit per-user?**  
+A: ✅ As of Phase A.5, `bandit_params`/`feedback_events`/`notifications` are keyed `user_id × cluster × context_class`. Gym personas (`sim:alex`…) and the live demo (`__default__`) are **separate namespaces** — the gym does not pre-train the live single-user bandit.
+
+**Q: Can I run the gym to pre-train / show a convergence curve?**  
+A: ✅ `kairos sim run --days 14 --personas alex,maya,jordan` runs the real ranking + bandit loop against synthetic lifestyles; `/api/metrics` returns the engagement curve from `feedback_events`. `kairos sim reset` clears it.
+
+**Q: Does the live heartbeat work right now?**  
+A: ✅ Fixed (2026-06-27). Two blockers resolved: (1) the nested `asyncio.run` in `read_context` — `heartbeat.run` now `await get_context_async`; (2) a stale unique `cluster_id_1_context_class_1` index that crashed `ensure_bandit_indexes` and broke multi-user — now dropped on startup. Verified end-to-end: SURFACE → dismiss → bandit `β 1.0→1.4`.
+
+**Q: Why might a heartbeat stay KAIROS_OK even with a good cluster match?**  
+A: The `intelligence_moment_fit_check` LLM gate (on by default) can veto a surface (`gate failed: moment_fit`). It also adds a 2nd Gemini call per surface (latency). For demos, set `INTELLIGENCE_MOMENT_FIT_CHECK=false`.
+
 **Q: Snooze vs dismiss?**  
 A: Snooze = right cluster, wrong time — no β penalty; cluster excluded from ranking for 120min in same context class. Dismiss = wrong cluster — β increases, surface weight drops.
 
 **Q: Can I see the web dashboard?**  
-A: ✅ `uv run kairos serve` → inbox at `http://127.0.0.1:8420`. Snooze/dismiss POST to `/api/feedback`. Admin mode shows SSE activity feed + bandit α/β. 🚧 Sidebar context/clusters/sparkline still mock data.
+A: ✅ `just demo` → inbox at `http://127.0.0.1:8420`. Snooze/dismiss → `/api/feedback`. Admin: pipeline log, bandit α/β, engagement sparkline, GEPA runs (when present).
+
+**Q: Is there a Kairos MCP server for Claude Code / Cursor?**  
+A: ✅ `uv run kairos mcp` — see `docs/MCP_SETUP.md` and [DEMO.md](./DEMO.md) § MCP. Calendar via Kairos `sync_google_headspace`.
 
 **Q: GEPA / nightly self-improvement?**  
-A: ❌ Planned second loop; digest prompt optimization not wired.
+A: ✅ Eval harness + `kairos optimize run|readiness|eval` + `POST /api/optimize` + admin panel. Needs ≥ `GEPA_MIN_SAMPLES` feedback events. Nightly automation not wired yet.
 
 **Q: Incremental sync / re-embed on change?**  
-A: 🚧 Fingerprints + `bookmarks/pipeline.py` exist; `kairos ingest update` and incremental X pagination not wired to CLI yet.
+A: 🚧 Fingerprints + `kairos bookmarks prep` exist; X sync paginates full corpus unless `max_pages` set; bookmark cursor incremental sync not on CLI yet.
 
 ---
 
@@ -104,35 +115,32 @@ A: HDBSCAN with `min_cluster_size=3`; dense topics merge (51-member "software-en
 A: ✅ Online contextual bandit — dismiss/snooze/click update α/β in `bandit_params`; Thompson sampling on next heartbeat. No gradient steps on Gemini.
 
 **Q: What's the Self-Improvement Stack?**  
-A: ✅ `feedback_events` + `bandit_params` + notifications in MongoDB; EventBus → SSE `/api/stream` + admin activity feed. 🚧 Eval harness + GEPA + engagement chart still P7. ⚠️ GEPA panel in HTML is mock — do not claim shipped.
+A: ✅ `feedback_events` + bandit online updates + EventBus → SSE admin feed + engagement sparkline from gym + GEPA eval harness. 🚧 Automated nightly GEPA cron.
 
 **Q: Is this Recursive Intelligence / weight RSI?**  
-A: Honest scope: prompt-level self-improvement via GEPA (P7), not model weight training. Bandit is policy RSI at the application layer.
+A: Honest scope: prompt-level self-improvement via GEPA, not model weight training. Bandit is policy RSI at the application layer.
 
-**Q: Where is theme status tracked?**  
-A: `docs/demo-readiness/THEME_LOG.md` — updated each phase via `.cursor/skills/kairos-hackathon-themes/`.
+**Q: Where is theme / phase audit history?**  
+A: [docs/archive/hackathon/](../archive/hackathon/) — `THEME_LOG.md`, `PHASE_REVIEWS.md`.
 
 ---
 
 ## Demo script anchors
 
 **Q: Minimum viable demo path?**  
-A: **Browser:** (1) `uv run kairos serve`. (2) `uv run kairos heartbeat` or `POST /api/heartbeat`. (3) Dismiss in inbox. (4) Admin mode → SSE + bandit panel. **CLI fallback:** `bookmarks clusters` → heartbeat → feedback → second heartbeat.
+A: `just demo-serve` → dismiss → Admin bandit panel. See `docs/demo-readiness/DEMO.md`.
 
 **Q: Best "learning visible" moment?**  
-A: Admin mode after dismiss — bandit β ticks up (`GET /api/bandit`) and SSE `feedback` event. CLI: `kairos feedback` JSON. GEPA prompt diff is P7.
+A: Admin mode after dismiss — bandit β ticks up (`GET /api/bandit`) and SSE `feedback` event. CLI: `kairos feedback`. GEPA prompt diff when `optimization_runs` has rows.
 
 **Q: What to show if live heartbeat fails?**  
 A: Pre-recorded terminal: `bookmarks clusters` + MongoDB cluster doc + one planned `feedback_events` α/β update.
 
 ---
 
-## Stale / open
+## What's next (post-hackathon)
 
-- [x] Update when embeddings land (P3)
-- [x] Update when first SURFACE heartbeat ships (P4)
-- [x] Update when first bandit update ships (P5)
-- [x] Update when `kairos serve` ships (P6)
-- [ ] Add rehearsal timestamps after first run-through
-- [ ] Update when GEPA / optimization_runs lands (P7)
-- [ ] Wire or hide mock sidebar widgets (context, clusters, GEPA panel)
+**Q: "What comes after the demo?"**  
+A: See [TECH_DEBT.md](../TECH_DEBT.md) P3 — typed MCP payloads, multi-user metrics, incremental X sync, GEPA cron, multi-source ingest. Vision notes: [archive/hackathon/VISION.md](../archive/hackathon/VISION.md).
+
+**One-liner:** "The hackathon proves the loop works. At scale, the question is whether a million users' attention data makes day one for user one million as good as session 100 for user one."

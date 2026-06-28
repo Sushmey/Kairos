@@ -59,6 +59,33 @@
     /* Fade-in on mode switch */
     @keyframes fadeUp { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
     .fade-up { animation: fadeUp 0.2s ease forwards; }
+
+    /* Listening / processing pulse */
+    @keyframes listenRing {
+      0%   { transform: scale(0.92); opacity: 0.55; }
+      50%  { transform: scale(1.06); opacity: 0.2; }
+      100% { transform: scale(0.92); opacity: 0.55; }
+    }
+    @keyframes listenDot {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.35; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+    @keyframes listenBar {
+      0%, 100% { transform: scaleY(0.35); opacity: 0.4; }
+      50% { transform: scaleY(1); opacity: 1; }
+    }
+    .listen-ring { animation: listenRing 2.4s ease-in-out infinite; }
+    .listen-ring-delay { animation: listenRing 2.4s ease-in-out 0.6s infinite; }
+    .listen-dot { animation: listenDot 1.4s ease-in-out infinite; }
+    .listen-dot-2 { animation: listenDot 1.4s ease-in-out 0.2s infinite; }
+    .listen-dot-3 { animation: listenDot 1.4s ease-in-out 0.4s infinite; }
+    .listen-bar { animation: listenBar 1.1s ease-in-out infinite; transform-origin: bottom; }
+    .listen-bar-2 { animation: listenBar 1.1s ease-in-out 0.15s infinite; transform-origin: bottom; }
+    .listen-bar-3 { animation: listenBar 1.1s ease-in-out 0.3s infinite; transform-origin: bottom; }
+    .listen-bar-4 { animation: listenBar 1.1s ease-in-out 0.45s infinite; transform-origin: bottom; }
+    /* Streaming log cursor */
+    @keyframes logBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    .log-cursor { animation: logBlink 1s step-end infinite; }
   </style>
 
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
@@ -92,8 +119,13 @@
     <!-- Wordmark -->
     <div>
       <span x-show="mode==='user'" class="text-[#111111] text-lg font-medium tracking-[-0.03em]">kairos</span>
-      <span x-show="mode==='admin'" x-cloak class="text-t-amber font-mono text-sm tracking-[0.12em]">
-        KAIROS<span class="text-t-dim">/SYS</span>
+      <a
+        x-show="mode==='user'"
+        href="/walkthrough"
+        class="text-xs text-[#9CA3AF] hover:text-[#C4922A] ml-3"
+      >How it works</a>
+      <span x-show="mode==='admin'" x-cloak class="text-t-bright text-sm tracking-[-0.02em]">
+        kairos <span class="text-t-dim">· admin</span>
       </span>
     </div>
 
@@ -114,12 +146,23 @@
 
       <!-- Mode toggle -->
       <button
+        x-show="demoMode && mode==='admin'"
+        @click="runDemoSurface()"
+        :disabled="surfacing"
+        class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-medium border transition-colors cursor-pointer disabled:opacity-50"
+        :class="surfacing
+          ? 'border-t-amber/40 text-t-amber/60'
+          : 'border-t-amber text-t-amber hover:bg-t-amber/10'"
+      >
+        <span x-text="surfacing ? 'Surfacing…' : 'Surface now'"></span>
+      </button>
+      <button
         @click="toggleMode()"
         class="flex items-center gap-2 px-4 py-1.5 rounded-full text-sm border transition-colors cursor-pointer"
         :class="mode==='user'
           ? 'border-[#E5E7EB] text-[#6B7280] hover:text-[#111] hover:border-[#9CA3AF]'
           : 'border-t-border text-t-dim hover:text-t-amber hover:border-t-amber font-mono text-xs tracking-wider'"
-        x-text="mode==='user' ? '⬡ admin' : '◻ user'"
+        x-text="mode==='user' ? 'Admin view' : '← User view'"
       ></button>
     </div>
   </header>
@@ -135,11 +178,20 @@
     <!-- Greeting -->
     <div class="mb-10">
       <p class="text-[#9CA3AF] text-sm mb-1.5" x-text="greeting.date"></p>
+      <div
+        x-show="demoStub"
+        class="mb-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"
+      >
+        Demo headspace — run <code class="text-[11px]">kairos google sync</code> or <code class="text-[11px]">just demo-sync-google</code> for live calendar context.
+      </div>
       <h1 class="text-[1.6rem] font-medium tracking-[-0.025em] leading-snug text-[#111]">
         <span x-text="greeting.salutation"></span>
-        You have
-        <span class="text-[#C4922A]" x-text="context.gap + ' minutes'"></span>
-        before your next meeting.
+        <template x-if="context.gap > 0">
+          <span>You have <span class="text-[#C4922A]" x-text="context.gap + ' minutes'"></span> before <span x-text="context.nextMeeting !== '—' ? context.nextMeeting : 'your next meeting'"></span>.</span>
+        </template>
+        <template x-if="context.gap <= 0">
+          <span>Your calendar is tight right now — Kairos will stay quiet unless something is urgent.</span>
+        </template>
       </h1>
     </div>
 
@@ -149,42 +201,188 @@
       <!-- ── Inbox ── -->
       <div>
 
-        <!-- Active notification card -->
-        <div class="bg-white border border-[#E5E7EB] rounded-2xl p-7 shadow-sm mb-6">
+        <!-- Active notification card OR startup listening state -->
+        <div class="bg-white border border-[#E5E7EB] rounded-2xl p-7 shadow-sm mb-6 min-h-[280px]">
+
+          <!-- Listening / processing (startup) -->
+          <div x-show="listening" x-cloak class="flex flex-col items-center justify-center py-10 text-center">
+            <div class="relative w-24 h-24 mb-6 flex items-center justify-center">
+              <span class="listen-ring absolute inset-0 rounded-full border border-[#E8D5A8]/60"></span>
+              <span class="listen-ring-delay absolute inset-2 rounded-full border border-[#C4922A]/30"></span>
+              <div class="relative w-14 h-14 rounded-full bg-[#FAF6EE] border border-[#E8D5A8] flex items-center justify-center">
+                <div class="flex items-end gap-1 h-6">
+                  <span class="listen-bar w-1 h-5 rounded-full bg-[#C4922A]"></span>
+                  <span class="listen-bar-2 w-1 h-5 rounded-full bg-[#C4922A]"></span>
+                  <span class="listen-bar-3 w-1 h-5 rounded-full bg-[#C4922A]"></span>
+                  <span class="listen-bar-4 w-1 h-5 rounded-full bg-[#C4922A]"></span>
+                </div>
+              </div>
+            </div>
+            <p class="text-sm font-medium text-[#374151] mb-1" x-text="listeningLabel"></p>
+            <p class="text-xs text-[#9CA3AF] max-w-xs leading-relaxed" x-text="listeningDetail"></p>
+            <button
+              x-show="demoMode"
+              @click="runDemoSurface()"
+              :disabled="surfacing"
+              class="mt-5 px-5 py-2 rounded-lg bg-[#111] text-white text-sm font-medium hover:bg-[#2a2a2a] transition-colors cursor-pointer disabled:opacity-50"
+              x-text="surfacing ? 'Surfacing…' : 'Surface now'"
+            ></button>
+            <div class="flex items-center gap-1.5 mt-5">
+              <span class="listen-dot w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span class="listen-dot-2 w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span class="listen-dot-3 w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span class="text-[11px] text-[#9CA3AF] ml-2 tracking-wide">live stream connected</span>
+            </div>
+          </div>
+
+          <!-- Notification content -->
+          <div x-show="!listening" x-cloak>
           <div class="flex items-start justify-between mb-0.5">
             <h2
               class="font-serif text-[1.75rem] leading-tight text-[#111]"
               x-text="active.cluster"
             ></h2>
-            <span class="text-xs text-[#9CA3AF] mt-2.5 shrink-0 ml-4" x-text="active.memberCount + ' bookmarks'"></span>
+            <span class="text-xs text-[#9CA3AF] mt-2.5 shrink-0 ml-4" x-show="active.memberCount > 0" x-text="active.memberCount + ' bookmarks'"></span>
           </div>
+
+          <p
+            x-show="active.summary"
+            class="text-[0.92rem] text-[#374151] leading-relaxed mb-3"
+            x-text="active.summary"
+          ></p>
 
           <p class="font-serif italic text-[#6B7280] text-[0.95rem] mb-5" x-text="active.whyNow"></p>
 
+          <div
+            x-show="active.webContext"
+            class="mb-5 rounded-lg bg-[#FAFAFA] border border-[#F3F4F6] px-4 py-3"
+          >
+            <p class="text-[10px] font-semibold text-[#9CA3AF] uppercase tracking-[0.08em] mb-1.5">From the web</p>
+            <p class="text-[0.85rem] text-[#52525B] leading-relaxed" x-text="active.webContext"></p>
+          </div>
+
           <div class="border-t border-[#F3F4F6] mb-5"></div>
 
-          <!-- Links -->
-          <ul class="space-y-3.5 mb-7">
-            <template x-for="link in active.links" :key="link.label">
-              <li class="flex items-start justify-between gap-4">
-                <a
-                  :href="link.url || '#'"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="text-sm font-medium text-[#111] hover:text-[#C4922A] underline-offset-2 hover:underline transition-colors"
-                  x-text="link.label"
-                ></a>
-                <span
-                  class="text-[11px] text-[#9CA3AF] whitespace-nowrap mt-0.5 shrink-0"
-                  x-text="link.mode + (link.time ? ' · ' + link.time : '')"
-                ></span>
+          <!-- Bookmark cards — judge value without opening x.com -->
+          <ul class="space-y-3 mb-7">
+            <template x-for="(link, idx) in active.links" :key="link.url + '-' + idx">
+              <li class="rounded-xl border border-[#ECECF0] bg-[#FAFAFA]/80 hover:border-[#E8D5A8] transition-colors overflow-hidden">
+                <div class="p-4">
+                  <div class="flex items-start justify-between gap-3 mb-2">
+                    <div class="min-w-0 flex-1">
+                      <p
+                        class="text-sm font-semibold text-[#111] leading-snug"
+                        x-text="link.title || link.label"
+                      ></p>
+                      <p
+                        x-show="link.author"
+                        class="text-[11px] text-[#9CA3AF] mt-0.5"
+                        x-text="link.author"
+                      ></p>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                      <template x-if="link.status">
+                        <span
+                          class="text-[10px] font-medium px-1.5 py-0.5 rounded-full whitespace-nowrap"
+                          :class="{
+                            'bg-emerald-50 text-emerald-700': link.status==='current',
+                            'bg-amber-50 text-[#9A6B12]':      link.status==='dated',
+                            'bg-rose-50 text-rose-600':        link.status==='stale',
+                            'bg-gray-100 text-gray-500':       link.status==='unknown',
+                          }"
+                          x-text="{current:'✓ current',dated:'● dated',stale:'✗ stale',unknown:'· unverified'}[link.status]"
+                        ></span>
+                      </template>
+                      <span
+                        x-show="link.mode"
+                        class="text-[10px] text-[#9CA3AF] whitespace-nowrap capitalize"
+                        x-text="link.mode"
+                      ></span>
+                    </div>
+                  </div>
+
+                  <!-- Primary body: research summary or saved tweet text -->
+                  <p
+                    x-show="link.summary"
+                    class="text-[0.84rem] text-[#374151] leading-relaxed"
+                    x-text="link.summary"
+                  ></p>
+                  <p
+                    x-show="!link.summary && link.excerpt"
+                    class="text-[0.84rem] text-[#374151] leading-relaxed"
+                    x-text="link.excerpt"
+                  ></p>
+
+                  <!-- Original tweet when research adds context on top -->
+                  <p
+                    x-show="link.summary && link.excerpt"
+                    class="text-[0.78rem] text-[#6B7280] leading-snug mt-2 pl-3 border-l-2 border-[#E5E7EB] italic"
+                    x-text="'Saved: ' + link.excerpt"
+                  ></p>
+
+                  <p
+                    x-show="link.pendingResearch"
+                    class="text-[10px] text-[#9A6B12] mt-2"
+                  >Web preview pending — run prep to fetch summaries.</p>
+
+                  <!-- Validation signal -->
+                  <p
+                    x-show="link.signal"
+                    class="text-[0.78rem] text-[#6B7280] leading-snug mt-2"
+                    x-text="link.signal"
+                  ></p>
+
+                  <!-- Topic tags -->
+                  <div x-show="link.tags && link.tags.length" class="flex flex-wrap gap-1.5 mt-2.5">
+                    <template x-for="tag in (link.tags || [])" :key="tag">
+                      <span
+                        class="text-[10px] px-2 py-0.5 rounded-full bg-white border border-[#E5E7EB] text-[#6B7280]"
+                        x-text="tag"
+                      ></span>
+                    </template>
+                  </div>
+
+                  <!-- Sources Kairos checked -->
+                  <div x-show="link.sources && link.sources.length" class="flex flex-wrap items-center gap-x-2 gap-y-1 mt-2.5">
+                    <span class="text-[10px] uppercase tracking-wider text-[#B0B0B8]">checked</span>
+                    <template x-for="src in (link.sources || [])" :key="src.url">
+                      <a
+                        :href="src.url"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="text-[10px] text-[#9CA3AF] hover:text-[#C4922A] transition-colors"
+                        x-text="src.title || (src.url || '').replace(/^https?:\/\/(www\.)?/,'').split('/')[0]"
+                      ></a>
+                    </template>
+                  </div>
+                </div>
+
+                <div class="px-4 py-2.5 bg-white border-t border-[#F3F4F6] flex items-center justify-between">
+                  <span
+                    x-show="link.perishability"
+                    class="text-[10px] text-[#B0B0B8] capitalize"
+                    x-text="link.perishability"
+                  ></span>
+                  <span x-show="!link.perishability"></span>
+                  <a
+                    :href="link.url || '#'"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="text-xs font-medium text-[#C4922A] hover:text-[#9A6B12] transition-colors"
+                  >
+                    Open link →
+                  </a>
+                </div>
               </li>
             </template>
           </ul>
 
           <!-- Actions -->
-          <div class="flex items-center gap-3">
-            <button class="px-5 py-2 rounded-lg bg-[#111] text-white text-sm font-medium hover:bg-[#2a2a2a] transition-colors cursor-pointer">
+          <div class="flex items-center gap-3" x-show="active.id">
+            <button
+              @click="openAllLinks()"
+              class="px-5 py-2 rounded-lg bg-[#111] text-white text-sm font-medium hover:bg-[#2a2a2a] transition-colors cursor-pointer"
+            >
               Open all
             </button>
             <button
@@ -199,6 +397,7 @@
             >
               Not relevant
             </button>
+          </div>
           </div>
         </div>
 
@@ -267,9 +466,12 @@
         <!-- Engagement card -->
         <div class="bg-white border border-[#E5E7EB] rounded-xl p-5">
           <p class="text-[10px] font-semibold text-[#9CA3AF] uppercase tracking-[0.1em] mb-1">Engagement</p>
+          <div x-show="sparkline.length" x-cloak>
           <div class="flex items-baseline gap-2 mb-5">
             <span class="text-3xl font-semibold tracking-tight" x-text="engagementRate + '%'"></span>
-            <span class="text-xs text-emerald-600 font-medium">+12% this week</span>
+            <span class="text-xs font-medium" x-show="engagementDelta !== null"
+              :class="engagementDelta >= 0 ? 'text-emerald-600' : 'text-red-500'"
+              x-text="(engagementDelta >= 0 ? '+' : '') + engagementDelta + '% this week'"></span>
           </div>
           <!-- Sparkline -->
           <div class="flex items-end gap-1 h-10">
@@ -277,7 +479,7 @@
               <div
                 class="flex-1 rounded-[2px]"
                 :class="i===sparkline.length-1 ? 'bg-[#C4922A]' : 'bg-[#E5E7EB]'"
-                :style="'height:' + Math.round(v*100) + '%'"
+                :style="'height:' + Math.max(4, Math.round(v*100)) + '%'"
               ></div>
             </template>
           </div>
@@ -285,19 +487,27 @@
             <span class="text-[10px] text-[#9CA3AF]">10 sessions ago</span>
             <span class="text-[10px] text-[#9CA3AF]">now</span>
           </div>
+          </div>
+          <p x-show="!sparkline.length" class="text-sm text-[#9CA3AF] leading-relaxed">
+            Surfaces and feedback will appear here — dismiss or snooze to teach the bandit.
+          </p>
         </div>
 
         <!-- Clusters -->
         <div class="bg-white border border-[#E5E7EB] rounded-xl p-5">
-          <p class="text-[10px] font-semibold text-[#9CA3AF] uppercase tracking-[0.1em] mb-4">Your clusters</p>
-          <div class="space-y-2.5">
+          <p class="text-[10px] font-semibold text-[#9CA3AF] uppercase tracking-[0.1em] mb-1">Your clusters</p>
+          <p x-show="totalBookmarks > 0" class="text-[10px] text-[#9CA3AF] mb-3" x-text="totalBookmarks + ' bookmarks indexed'"></p>
+          <div class="space-y-2.5" x-show="clusters.length">
             <template x-for="c in clusters" :key="c.name">
               <div class="flex justify-between items-center">
-                <span class="text-sm text-[#374151]" x-text="c.name"></span>
-                <span class="text-[11px] text-[#9CA3AF]" x-text="c.count"></span>
+                <span class="text-sm text-[#374151] truncate pr-2" x-text="c.name"></span>
+                <span class="text-[11px] text-[#9CA3AF] shrink-0" x-text="c.count"></span>
               </div>
             </template>
           </div>
+          <p x-show="!clusters.length" class="text-sm text-[#9CA3AF] leading-relaxed">
+            No clusters yet. Run <code class="text-[11px]">kairos bookmarks cluster</code>.
+          </p>
         </div>
 
       </div>
@@ -305,175 +515,333 @@
   </div>
 
   <!-- ════════════════════════════════════════════════
-       ADMIN VIEW  (terminal · observability)
+       ADMIN VIEW  (observability · explained)
   ════════════════════════════════════════════════ -->
   <div
     x-show="mode==='admin'"
     x-cloak
-    class="fade-up flex-1 grid grid-cols-[360px_1fr] overflow-hidden"
+    class="fade-up flex-1 flex flex-col overflow-hidden"
   >
 
-    <!-- ── Left: Activity feed ── -->
-    <div class="border-r border-t-border flex flex-col overflow-hidden">
+    <!-- Intro -->
+    <div class="border-b border-t-border px-6 py-4 shrink-0 bg-t-panel/25">
+      <div class="flex items-start justify-between gap-6">
+        <div class="max-w-2xl">
+          <h2 class="text-t-bright text-sm font-medium mb-1">Admin · how Kairos decides</h2>
+          <p class="text-t-dim text-xs leading-relaxed">
+            Kairos is a contextual bandit: it learns <em class="text-[#C8CDD6] not-italic">when</em> to interrupt you with bookmark clusters.
+            Every <span x-text="decisionInterval"></span>s it reads your headspace, ranks clusters, runs interrupt gates, and either
+            stays silent or surfaces one digest.
+            <span x-show="demoMode">In demo mode, click <strong class="text-t-amber font-normal">Surface now</strong> when you're ready — no auto-cycle on load.</span>
+            <span x-show="!demoMode">The log on the left is the live trace; panels on the right summarize the latest outcome.</span>
+          </p>
+        </div>
+        <div class="hidden lg:flex gap-4 shrink-0 text-[10px] text-t-dim">
+          <div><span class="text-t-green">●</span> surfaced</div>
+          <div><span class="text-t-dim">●</span> silent</div>
+          <div><span class="text-violet-300">●</span> LLM step</div>
+        </div>
+      </div>
+    </div>
 
-      <div class="px-5 py-3.5 border-b border-t-border flex justify-between items-center shrink-0">
-        <span class="text-t-dim text-xs tracking-[0.1em]">ACTIVITY FEED</span>
-        <span class="text-t-dim text-xs" x-text="'Δ ' + decisionInterval + 's'"></span>
+    <div class="flex-1 grid grid-cols-[380px_1fr] overflow-hidden min-h-0">
+
+    <!-- ── Left: Pipeline log ── -->
+    <div class="border-r border-t-border flex flex-col overflow-hidden min-h-0">
+
+      <div class="px-5 py-3 border-b border-t-border shrink-0">
+        <p class="text-t-bright text-xs font-medium mb-0.5">Pipeline log</p>
+        <p class="text-t-dim text-[10px] leading-relaxed">
+          Step-by-step narration of each heartbeat — context, ranking, gates, digest, delivery.
+        </p>
       </div>
 
-      <div class="flex-1 overflow-y-auto slim-scroll">
-        <template x-for="(ev, i) in activityLog" :key="i">
-          <div
-            class="px-5 py-3 border-b border-t-border/40 transition-colors"
-            :class="i===0 ? 'bg-t-panel' : 'hover:bg-t-panel/50'"
-          >
-            <div class="flex items-center gap-3 mb-1">
-              <span class="text-t-dim text-xs shrink-0" x-text="ev.time"></span>
-              <span
-                class="text-xs font-medium"
-                :class="ev.kind==='SURFACE' ? 'text-t-green' : 'text-t-dim'"
-                x-text="ev.kind"
-              ></span>
-              <span x-show="i===0" class="cursor text-t-amber text-xs">█</span>
-            </div>
-            <div class="text-xs pl-0 mt-0.5">
-              <template x-if="ev.kind==='SURFACE'">
-                <div>
-                  <span class="text-t-dim">cluster=</span><span class="text-t-bright" x-text="ev.cluster"></span>
-                  <span class="text-t-dim ml-3">score=</span><span class="text-t-bright" x-text="ev.score"></span>
-                  <span class="text-t-dim ml-3">gate=</span><span class="text-t-green" x-text="ev.gate"></span>
-                </div>
-              </template>
-              <template x-if="ev.kind==='KAIROS_OK'">
-                <div class="text-t-dim" x-text="ev.reason"></div>
-              </template>
-            </div>
+      <div x-ref="logStream" class="flex-1 overflow-y-auto slim-scroll font-mono text-[11px] leading-relaxed px-4 py-3 min-h-0">
+        <div x-show="!activityLog.length" class="text-t-dim py-4 space-y-2">
+          <p><span class="text-t-amber">kairos</span><span class="text-t-dim"> ›</span> <span x-text="demoMode ? 'demo mode — click Surface now' : 'waiting for the first heartbeat…'"></span></p>
+          <p class="text-[10px] leading-relaxed pl-0" x-show="!demoMode">A cycle starts automatically on load, then repeats every <span x-text="decisionInterval"></span>s.</p>
+          <p class="text-[10px] leading-relaxed pl-0" x-show="demoMode">Reset + heartbeat in one step — full pipeline narration in this log.</p>
+        </div>
+        <template x-for="ev in activityLog" :key="ev.id">
+          <div class="py-0.5 flex gap-2 items-start group">
+            <span class="text-t-dim shrink-0 select-none" x-text="ev.time"></span>
+            <span
+              class="flex-1 break-words"
+              :class="{
+                'text-t-dim': ev.tone === 'dim',
+                'text-[#C8CDD6]': ev.tone === 'normal',
+                'text-t-green': ev.tone === 'success',
+                'text-violet-300': ev.tone === 'intel',
+                'text-t-amber': ev.tone === 'warn',
+                'text-rose-300': ev.tone === 'error',
+              }"
+            >
+              <span class="text-t-dim" x-text="ev.prefix"></span><span x-text="ev.line"></span>
+            </span>
           </div>
         </template>
+        <div x-show="activityLog.length" class="py-1 flex gap-2 items-center">
+          <span class="text-t-dim shrink-0" x-text="activityLog.length ? activityLog[activityLog.length - 1].time : ''"></span>
+          <span class="text-t-amber log-cursor">█</span>
+        </div>
+      </div>
+
+      <!-- Log legend -->
+      <div class="px-4 py-2 border-t border-t-border/60 shrink-0">
+        <p class="text-[10px] text-t-dim leading-relaxed">
+          <span class="text-t-dim/80">cycle</span> heartbeat ·
+          <span class="text-t-dim/80">context</span> headspace ·
+          <span class="text-t-dim/80">rank</span> match &amp; gates ·
+          <span class="text-t-dim/80">llm</span> Gemini ·
+          <span class="text-t-dim/80">out</span> decision ·
+          <span class="text-t-dim/80">deliver</span> inbox
+        </p>
       </div>
 
       <!-- Services status bar -->
-      <div class="px-5 py-3 border-t border-t-border flex gap-5 shrink-0">
+      <div class="px-5 py-3 border-t border-t-border shrink-0">
+        <p class="text-[10px] text-t-dim mb-2 tracking-wide">DEPENDENCIES</p>
+        <div class="flex flex-wrap gap-x-5 gap-y-2">
         <template x-for="svc in services" :key="svc.name">
-          <div class="flex items-center gap-1.5">
+          <div class="flex items-start gap-1.5 min-w-0">
             <span
-              class="w-1.5 h-1.5 rounded-full"
+              class="w-1.5 h-1.5 rounded-full mt-1 shrink-0"
               :class="{
                 'bg-t-green': svc.status==='ok',
                 'bg-amber-400': svc.status==='warn',
                 'bg-t-red': svc.status==='err',
               }"
             ></span>
-            <span class="text-t-dim text-xs" x-text="svc.name"></span>
+            <div class="min-w-0">
+              <span class="text-[#C8CDD6] text-xs block" x-text="svc.label"></span>
+              <span
+                x-show="svc.name==='google' && svc.email"
+                class="text-t-dim text-[10px] truncate block max-w-[160px]"
+                x-text="svc.email"
+              ></span>
+              <span
+                x-show="svc.name==='google' && !googleConnected"
+                class="text-t-dim text-[10px] block"
+              >not connected</span>
+            </div>
           </div>
         </template>
+        </div>
       </div>
     </div>
 
-    <!-- ── Right: Decision + GEPA + metrics ── -->
-    <div class="overflow-y-auto slim-scroll">
+    <!-- ── Right: Summaries ── -->
+    <div class="overflow-y-auto slim-scroll min-h-0">
 
       <!-- Last decision -->
       <div class="border-b border-t-border p-6">
-        <p class="text-t-dim text-xs tracking-[0.1em] mb-5">LAST DECISION</p>
-        <div class="grid grid-cols-2 gap-8">
+        <div class="mb-4">
+          <p class="text-t-bright text-xs font-medium mb-1">Latest policy decision</p>
+          <p class="text-t-dim text-[11px] leading-relaxed">
+            What the ranking pipeline chose on the most recent heartbeat — surface a cluster, or stay silent (<code class="text-t-dim">KAIROS_OK</code>).
+          </p>
+        </div>
 
-          <!-- Scores -->
-          <div class="space-y-2.5">
-            <div class="flex justify-between">
-              <span class="text-t-dim text-xs">cluster</span>
-              <span class="text-t-bright text-xs" x-text="lastDecision.cluster"></span>
+        <div
+          x-show="!hasDecisionData"
+          class="bg-t-panel/50 border border-t-border rounded-lg p-4 text-t-dim text-xs leading-relaxed"
+        >
+          No decision yet. Watch the pipeline log — you'll see context read → clusters ranked → gates checked → outcome.
+        </div>
+
+        <div x-show="hasDecisionData" x-cloak>
+          <p
+            class="text-sm leading-relaxed mb-5"
+            :class="lastDecision.surfaced ? 'text-t-green' : 'text-[#C8CDD6]'"
+            x-text="decisionNarrative"
+          ></p>
+
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <!-- Scores explained -->
+            <div class="bg-t-panel/40 border border-t-border rounded-lg p-4 space-y-3">
+              <p class="text-[10px] text-t-dim tracking-wide">MATCH SCORES</p>
+              <div class="space-y-2.5">
+                <div>
+                  <div class="flex justify-between gap-4 mb-0.5">
+                    <span class="text-[#C8CDD6] text-xs">Best cluster</span>
+                    <span class="text-t-bright text-xs text-right truncate" x-text="lastDecision.clusterName || lastDecision.cluster"></span>
+                  </div>
+                  <p class="text-[10px] text-t-dim">Bookmark topic group that best matched your current moment.</p>
+                </div>
+                <div>
+                  <div class="flex justify-between gap-4 mb-0.5">
+                    <span class="text-[#C8CDD6] text-xs">Adjusted score</span>
+                    <span class="text-t-bright text-xs" x-text="lastDecision.score"></span>
+                  </div>
+                  <p class="text-[10px] text-t-dim">Vector similarity × bandit weight — higher means better fit and learned engagement.</p>
+                </div>
+                <div>
+                  <div class="flex justify-between gap-4 mb-0.5">
+                    <span class="text-[#C8CDD6] text-xs">Score threshold</span>
+                    <span class="text-t-amber text-xs" x-text="lastDecision.threshold"></span>
+                  </div>
+                  <p class="text-[10px] text-t-dim">Minimum adjusted score required to even consider surfacing.</p>
+                </div>
+                <div>
+                  <div class="flex justify-between gap-4 mb-0.5">
+                    <span class="text-[#C8CDD6] text-xs">P(engage)</span>
+                    <span class="text-t-green text-xs" x-text="lastDecision.banditP"></span>
+                  </div>
+                  <p class="text-[10px] text-t-dim">Bandit's estimate that you'd engage if we surfaced this cluster in this context.</p>
+                </div>
+              </div>
             </div>
-            <div class="flex justify-between">
-              <span class="text-t-dim text-xs">vector score</span>
-              <span class="text-t-bright text-xs" x-text="lastDecision.score"></span>
-            </div>
-            <div class="flex justify-between">
-              <span class="text-t-dim text-xs">threshold</span>
-              <span class="text-t-amber text-xs" x-text="lastDecision.threshold"></span>
-            </div>
-            <div class="flex justify-between">
-              <span class="text-t-dim text-xs">bandit p(engage)</span>
-              <span class="text-t-green text-xs" x-text="lastDecision.banditP"></span>
+
+            <!-- Gate checklist -->
+            <div class="bg-t-panel/40 border border-t-border rounded-lg p-4 space-y-3">
+              <p class="text-[10px] text-t-dim tracking-wide">INTERRUPT CHECKLIST</p>
+              <p class="text-[10px] text-t-dim leading-relaxed -mt-1 mb-1">All must pass to surface. ✓ = cleared, ✗ = blocked silence.</p>
+              <template x-for="(passed, key) in lastDecision.gate" :key="key">
+                <div class="flex gap-3 items-start">
+                  <span
+                    class="text-xs shrink-0 mt-px w-4"
+                    :class="passed ? 'text-t-green' : 'text-t-red'"
+                    x-text="passed ? '✓' : '✗'"
+                  ></span>
+                  <div class="min-w-0">
+                    <span class="text-[#C8CDD6] text-xs block" x-text="gateLabel(key)"></span>
+                    <span class="text-[10px] text-t-dim block leading-snug" x-text="gateHint(key)"></span>
+                  </div>
+                </div>
+              </template>
+              <p x-show="!Object.keys(lastDecision.gate).length" class="text-t-dim text-xs">Gate details appear after the first ranking cycle.</p>
             </div>
           </div>
+        </div>
+      </div>
 
-          <!-- Gate results -->
-          <div class="space-y-2.5">
-            <p class="text-t-dim text-xs tracking-[0.08em]">INTERRUPT GATE</p>
-            <template x-for="(passed, key) in lastDecision.gate" :key="key">
-              <div class="flex justify-between">
-                <span class="text-t-dim text-xs" x-text="key"></span>
-                <span
-                  class="text-xs"
-                  :class="passed ? 'text-t-green' : 'text-t-red'"
-                  x-text="passed ? '✓' : '✗'"
-                ></span>
+      <!-- Engagement -->
+      <div class="border-b border-t-border p-6">
+        <div class="mb-4">
+          <p class="text-t-bright text-xs font-medium mb-1">Engagement trend</p>
+          <p class="text-t-dim text-[11px] leading-relaxed">
+            When Kairos surfaces a digest, do you open links or give positive feedback? Higher engagement teaches the bandit when you're receptive.
+          </p>
+        </div>
+        <div x-show="!sparkline.length" class="text-t-dim text-xs leading-relaxed bg-t-panel/40 border border-t-border rounded-lg p-4">
+          No engagement history yet — rates appear after surfaces and feedback (open, snooze, dismiss).
+        </div>
+        <div x-show="sparkline.length" x-cloak>
+          <div class="flex items-end gap-1.5 h-14 mb-2">
+            <template x-for="(v, i) in sparkline" :key="i">
+              <div class="flex-1 flex flex-col justify-end">
+                <div
+                  class="w-full rounded-[2px] border"
+                  :class="i===sparkline.length-1
+                    ? 'bg-t-amber border-t-amber'
+                    : 'bg-t-panel border-t-border'"
+                  :style="'height:' + Math.max(4, Math.round(v*100)) + '%'"
+                  :title="Math.round(v*100) + '% engaged'"
+                ></div>
               </div>
             </template>
           </div>
-        </div>
-      </div>
-
-      <!-- GEPA sleep-time diff -->
-      <div class="border-b border-t-border p-6">
-        <div class="flex items-baseline justify-between mb-5">
-          <p class="text-t-dim text-xs tracking-[0.1em]">SLEEP-TIME PASS · 02:00</p>
-          <span class="text-t-green text-xs" x-text="gepa.version + ' · ' + gepa.delta + ' engagement'"></span>
-        </div>
-
-        <div class="bg-t-panel border border-t-border rounded p-4 font-mono text-xs space-y-2">
-          <div class="flex gap-3">
-            <span class="text-t-red shrink-0">-</span>
-            <span class="text-t-red" x-text="gepa.before"></span>
-          </div>
-          <div class="flex gap-3">
-            <span class="text-t-green shrink-0">+</span>
-            <span class="text-t-green" x-text="gepa.after"></span>
+          <div class="flex justify-between items-center">
+            <span class="text-t-dim text-[10px]">older sessions</span>
+            <span class="text-t-amber text-xs font-medium">
+              <span x-text="engagementRate"></span>% engagement now
+              <span x-show="engagementDelta != null" class="text-t-dim font-normal" x-text="'(' + (engagementDelta >= 0 ? '+' : '') + engagementDelta + '% vs prior)'"></span>
+            </span>
           </div>
         </div>
       </div>
 
-      <!-- Engagement chart -->
+      <!-- Bandit -->
       <div class="border-b border-t-border p-6">
-        <p class="text-t-dim text-xs tracking-[0.1em] mb-5">ENGAGEMENT · SESSION HISTORY</p>
-        <div class="flex items-end gap-1.5 h-14 mb-2">
-          <template x-for="(v, i) in sparkline" :key="i">
-            <div class="flex-1 flex flex-col justify-end">
-              <div
-                class="w-full rounded-[2px] border"
-                :class="i===sparkline.length-1
-                  ? 'bg-t-amber border-t-amber'
-                  : 'bg-t-panel border-t-border'"
-                :style="'height:' + Math.round(v*100) + '%'"
-              ></div>
+        <div class="mb-4">
+          <p class="text-t-bright text-xs font-medium mb-1">Bandit learning</p>
+          <p class="text-t-dim text-[11px] leading-relaxed">
+            Thompson sampling tracks how often you engage vs ignore surfaces, per cluster and context (e.g. pre-meeting).
+            It nudges future timing — not which bookmarks you saved.
+          </p>
+        </div>
+        <div
+          x-show="bandit.alpha === '—'"
+          class="text-t-dim text-xs leading-relaxed bg-t-panel/40 border border-t-border rounded-lg p-4"
+        >
+          No bandit data yet. Params update when you respond to a surface (snooze, dismiss, or engage).
+        </div>
+        <div x-show="bandit.alpha !== '—'" x-cloak class="bg-t-panel/40 border border-t-border rounded-lg p-4 space-y-3">
+          <p class="text-[10px] text-t-dim">
+            Tracking: <span class="text-t-amber" x-text="lastDecision.clusterName || lastDecision.cluster || 'latest cluster'"></span>
+          </p>
+          <div class="grid grid-cols-2 gap-4 text-xs">
+            <div>
+              <span class="text-t-dim block text-[10px] mb-0.5">Engagements (α)</span>
+              <span class="text-t-bright" x-text="bandit.alpha"></span>
+              <span class="text-t-dim text-[10px] block mt-0.5">Times you found a surface useful</span>
             </div>
-          </template>
-        </div>
-        <div class="flex justify-between">
-          <span class="text-t-dim text-xs">10 sessions ago</span>
-          <span class="text-t-amber text-xs font-medium" x-text="engagementRate + '% now'"></span>
-        </div>
-      </div>
-
-      <!-- Bandit params -->
-      <div class="p-6">
-        <p class="text-t-dim text-xs tracking-[0.1em] mb-4">BANDIT PARAMS · <span class="text-t-amber" x-text="lastDecision.cluster + ' × pre-meeting'"></span></p>
-        <div class="bg-t-panel border border-t-border rounded p-4 font-mono text-xs space-y-2">
-          <div>
-            <span class="text-t-dim">alpha </span><span class="text-t-bright" x-text="bandit.alpha"></span>
-            <span class="text-t-dim ml-6">beta </span><span class="text-t-bright" x-text="bandit.beta"></span>
+            <div>
+              <span class="text-t-dim block text-[10px] mb-0.5">Non-engagements (β)</span>
+              <span class="text-t-bright" x-text="bandit.beta"></span>
+              <span class="text-t-dim text-[10px] block mt-0.5">Snoozes, dismissals, ignores</span>
+            </div>
+            <div>
+              <span class="text-t-dim block text-[10px] mb-0.5">P(engage)</span>
+              <span class="text-t-green" x-text="bandit.pEngage"></span>
+              <span class="text-t-dim text-[10px] block mt-0.5">α ÷ (α + β) — higher → more likely to surface</span>
+            </div>
+            <div>
+              <span class="text-t-dim block text-[10px] mb-0.5">Observations</span>
+              <span class="text-t-amber" x-text="bandit.samples"></span>
+              <span class="text-t-dim text-[10px] block mt-0.5">Total feedback events for this arm</span>
+            </div>
           </div>
-          <div>
-            <span class="text-t-dim">p(engage) </span><span class="text-t-green" x-text="bandit.pEngage"></span>
-            <span class="text-t-dim ml-6">updated </span><span class="text-t-amber" x-text="bandit.updated"></span>
-          </div>
-          <div>
-            <span class="text-t-dim">samples </span><span class="text-t-amber" x-text="bandit.samples"></span>
-          </div>
+          <p class="text-[10px] text-t-dim">Last updated <span x-text="bandit.updated"></span></p>
         </div>
       </div>
 
+      <!-- GEPA -->
+      <div x-show="gepaEnabled" class="p-6">
+        <div class="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <p class="text-t-bright text-xs font-medium mb-1">Prompt optimization (GEPA)</p>
+            <p class="text-t-dim text-[11px] leading-relaxed max-w-lg">
+              Reflects on past surfaces and rewrites the digest prompt to improve engagement.
+              Optional — the bandit handles timing; GEPA improves what gets written.
+            </p>
+          </div>
+          <button
+            @click="runGepa()"
+            :disabled="gepaRunning"
+            class="shrink-0 px-3 py-1.5 rounded text-xs border border-t-border text-t-dim hover:border-t-amber hover:text-t-amber transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            x-text="gepaRunning ? 'running…' : 'Run optimization'"
+          ></button>
+        </div>
+
+        <div class="bg-t-panel/40 border border-t-border rounded-lg p-4">
+          <div class="flex items-baseline gap-3 mb-3" x-show="gepa.before || gepa.after">
+            <span class="text-t-green text-xs" x-text="gepa.version"></span>
+            <span class="text-t-dim text-xs" x-text="gepa.delta !== '—' ? gepa.delta + ' vs prior prompt' : ''"></span>
+          </div>
+          <div class="font-mono text-xs space-y-2">
+            <div class="flex gap-3" x-show="gepa.before">
+              <span class="text-t-red shrink-0">−</span>
+              <div>
+                <span class="text-[10px] text-t-dim block mb-0.5">Previous prompt</span>
+                <span class="text-t-red/90 leading-relaxed" x-text="gepa.before"></span>
+              </div>
+            </div>
+            <div class="flex gap-3" x-show="gepa.after">
+              <span class="text-t-green shrink-0">+</span>
+              <div>
+                <span class="text-[10px] text-t-dim block mb-0.5">Optimized prompt</span>
+                <span class="text-t-green/90 leading-relaxed" x-text="gepa.after"></span>
+              </div>
+            </div>
+            <div x-show="!gepa.before && !gepa.after" class="text-t-dim text-xs leading-relaxed">
+              No optimization runs yet. Needs engagement history first — then click "Run optimization" to evolve the digest prompt.
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
     </div>
   </div>
 
@@ -486,90 +854,129 @@
         mode: 'user',
         scanning: false,
         decisionInterval: 300,
+        demoStub: false,
+        demoMode: false,
+        autoHeartbeat: true,
+        surfacing: false,
+        heartbeatTimer: null,
+        listening: true,
+        listeningLabel: 'Listening for events…',
+        listeningDetail: 'Reading your calendar, clusters, and recent activity.',
 
         greeting: {
-          date: 'Friday, 27 June · 2:18 PM',
-          salutation: 'Good afternoon. ',
+          date: '',
+          salutation: '',
         },
 
         context: {
-          gap: 42,
-          surfaces: 2,
-          budget: 5,
-          location: 'office',
-          nextMeeting: '3:00 PM',
+          gap: 0,
+          surfaces: 0,
+          budget: 3,
+          location: 'unknown',
+          nextMeeting: '—',
         },
 
         active: {
           id: '',
-          cluster: 'Waiting for Kairos…',
+          cluster: '',
           memberCount: 0,
-          whyNow: 'Run a heartbeat or wait for the next decision cycle.',
+          summary: '',
+          whyNow: '',
+          webContext: '',
           links: [],
         },
 
         history: [],
 
-        clusters: [
-          { name: 'Distributed Systems', count: '8'  },
-          { name: 'AI Security',         count: '14' },
-          { name: 'System Design',       count: '6'  },
-          { name: 'ML Papers',           count: '23' },
-          { name: 'Places & Food',       count: '11' },
-        ],
+        clusters: [],
+        totalBookmarks: 0,
 
-        activityLog: [
-          { time: '14:22:01', kind: 'SURFACE',   cluster: 'distributed-systems', score: 0.84, gate: 'PASS' },
-          { time: '14:17:00', kind: 'KAIROS_OK', reason: 'gate: score_threshold (0.61 < 0.72)' },
-          { time: '14:12:00', kind: 'KAIROS_OK', reason: 'gate: gap_insufficient (18m < 30m)' },
-          { time: '14:07:00', kind: 'KAIROS_OK', reason: 'gate: min_gap (22m since last surface)' },
-          { time: '14:02:01', kind: 'SURFACE',   cluster: 'ai-security', score: 0.79, gate: 'PASS' },
-          { time: '13:57:00', kind: 'KAIROS_OK', reason: 'gate: budget (5 / 5 reached)' },
-          { time: '13:52:00', kind: 'KAIROS_OK', reason: 'gate: score_threshold (0.48 < 0.72)' },
-          { time: '13:47:01', kind: 'SURFACE',   cluster: 'ml-papers', score: 0.76, gate: 'PASS' },
-          { time: '13:42:00', kind: 'KAIROS_OK', reason: 'gate: gap_insufficient (9m < 30m)' },
-          { time: '13:37:00', kind: 'KAIROS_OK', reason: 'gate: score_threshold (0.55 < 0.72)' },
-        ],
+        activityLog: [],
+        activitySeq: 0,
 
         lastDecision: {
-          cluster:  'distributed-systems',
-          score:    0.84,
-          threshold: 0.72,
-          banditP:  '0.75',
-          gate: {
-            daily_budget:    true,
-            calendar_gap:    true,
-            min_gap:         true,
-            score_threshold: true,
-          },
+          cluster:  '—',
+          clusterName: null,
+          surfaced: false,
+          score:    '—',
+          threshold: 0.12,
+          banditP:  '—',
+          gate: {},
         },
 
+        gateHints: {
+          daily_budget:    { label: 'Under daily limit',    hint: 'Has not exceeded today\'s interrupt budget.' },
+          calendar_gap:    { label: 'Enough free time',     hint: 'Calendar gap before next meeting is long enough.' },
+          min_gap:         { label: 'Cooldown elapsed',     hint: 'Enough time has passed since the last surface.' },
+          score_threshold: { label: 'Strong topical match', hint: 'Best cluster\'s relevance score clears the minimum.' },
+          moment_fit:      { label: 'Fits the moment',      hint: 'Gemini judged this cluster appropriate for your headspace.' },
+        },
+
+        gepaEnabled: true,
+        gepaRunning: false,
+
         gepa: {
-          version: 'v3 → v4',
-          delta:   '+13%',
-          before:  '"Here are relevant threads from your bookmarks."',
-          after:   '"Before {event}, these {n} threads might be useful:"',
+          version: 'v0 (default)',
+          delta: '—',
+          before: '',
+          after: '',
         },
 
         bandit: {
-          alpha:   '12.4',
-          beta:    '4.1',
-          pEngage: '0.75',
-          updated: '14:22:01',
-          samples: '47',
+          alpha:   '—',
+          beta:    '—',
+          pEngage: '—',
+          updated: '—',
+          samples: '0',
         },
 
         services: [
-          { name: 'mongodb',  status: 'ok'   },
-          { name: 'gemini',   status: 'ok'   },
-          { name: 'calendar', status: 'warn' },
-          { name: 'mcp',      status: 'ok'   },
+          { name: 'mongodb', label: 'Bookmarks & state',  status: 'ok'   },
+          { name: 'gemini',  label: 'LLM & embeddings', status: 'ok'   },
+          { name: 'google',  label: 'Calendar & Gmail',   status: 'warn', email: null },
         ],
 
-        sparkline: [0.45, 0.52, 0.48, 0.55, 0.58, 0.61, 0.65, 0.68, 0.71, 0.74],
+        googleConnected: false,
+        googleEmail: null,
+
+        sparkline: [],
+        engagementDelta: null,
 
         get engagementRate() {
+          if (!this.sparkline.length) return 0;
           return Math.round(this.sparkline[this.sparkline.length - 1] * 100);
+        },
+
+        get hasDecisionData() {
+          return Object.keys(this.lastDecision.gate).length > 0
+            || this.lastDecision.surfaced
+            || this.lastDecision.cluster !== '—';
+        },
+
+        get decisionNarrative() {
+          if (!this.hasDecisionData) return '';
+          const name = this.lastDecision.clusterName || this.lastDecision.cluster;
+          if (this.lastDecision.surfaced && name && name !== '—') {
+            return `Surfaced «${name}» — adjusted score ${this.lastDecision.score} (needs ≥ ${this.lastDecision.threshold} to qualify).`;
+          }
+          const failed = Object.entries(this.lastDecision.gate)
+            .filter(([, ok]) => !ok)
+            .map(([k]) => this.gateLabel(k).toLowerCase());
+          if (failed.length) {
+            return `Stayed silent — ${failed.length === 1 ? failed[0] : failed.slice(0, -1).join(', ') + ' and ' + failed[failed.length - 1]} blocked the interrupt.`;
+          }
+          if (this.lastDecision.cluster === '—' || !name || name === '—') {
+            return 'Stayed silent — no bookmark cluster matched strongly enough this cycle.';
+          }
+          return `Stayed silent — «${name}» was closest but did not clear all interrupt checks.`;
+        },
+
+        gateLabel(key) {
+          return this.gateHints[key]?.label || key.replace(/_/g, ' ');
+        },
+
+        gateHint(key) {
+          return this.gateHints[key]?.hint || '';
         },
 
         toggleMode() {
@@ -584,7 +991,11 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ notification_id: id, action: 'snoozed' }),
-          }).then(() => this.refreshNotifications());
+          }).then(() => {
+            this.refreshNotifications();
+            this.refreshBandit();
+            this.refreshMetrics();
+          });
         },
 
         dismiss(id) {
@@ -593,24 +1004,69 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ notification_id: id, action: 'dismissed' }),
-          }).then(() => this.refreshNotifications());
+          }).then(() => {
+            this.refreshNotifications();
+            this.refreshBandit();
+            this.refreshMetrics();
+          });
+        },
+
+        openAllLinks() {
+          (this.active.links || []).forEach(link => {
+            if (link.url) window.open(link.url, '_blank', 'noopener,noreferrer');
+          });
         },
 
         applyNotification(n) {
-          if (!n || !n.digest) return;
+          if (!n || !n.digest) return false;
+          this.listening = false;
           const d = n.digest;
           this.active = {
             id: n.notification_id,
             cluster: d.cluster_name || 'Cluster',
             memberCount: d.member_count || 0,
+            summary: d.summary || '',
             whyNow: d.why_now || '',
+            webContext: d.web_context || '',
             links: (d.links || []).map(l => ({
-              label: l.label || l.url || 'link',
+              label: l.title || l.label || l.url || 'link',
+              title: l.title || l.label || '',
               url: l.url,
               mode: l.consumption_mode || '',
+              summary: l.summary || '',
+              excerpt: l.excerpt || '',
+              signal: l.signal || '',
+              status: l.status || '',
+              sources: l.sources || [],
+              tags: l.tags || [],
+              author: l.author || '',
+              perishability: l.perishability || '',
+              researched: !!l.researched,
+              pendingResearch: !!l.pending_research,
               time: '',
             })),
           };
+          return true;
+        },
+
+        finishListening(result) {
+          if (!this.listening) return;
+          this.listening = false;
+          if (result?.status === 'SURFACE' && result.notification) {
+            this.applyNotification(result.notification);
+            return;
+          }
+          if (!this.active.id) {
+            this.active = {
+              id: '',
+              cluster: 'All quiet',
+              memberCount: 0,
+              summary: '',
+              whyNow: result?.reason || 'Kairos checked your context — nothing worth interrupting right now.',
+              webContext: '',
+              links: [],
+            };
+          }
         },
 
         formatTime(iso) {
@@ -619,21 +1075,43 @@
           return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
         },
 
+        clearActiveInbox() {
+          this.active = {
+            id: '',
+            cluster: 'All quiet',
+            memberCount: 0,
+            summary: '',
+            whyNow: 'Kairos is listening — nothing pending in your inbox.',
+            webContext: '',
+            links: [],
+          };
+        },
+
         refreshNotifications() {
           fetch('/api/notifications?limit=10')
-            .then(r => r.json())
+            .then(r => {
+              if (!r.ok) throw new Error(`notifications ${r.status}`);
+              return r.json();
+            })
             .then(items => {
-              if (!items.length) return;
-              const pending = items.find(n => n.status === 'pending') || items[0];
-              this.applyNotification(pending);
+              if (!items.length) {
+                this.history = [];
+                this.clearActiveInbox();
+                return;
+              }
+              const pending = items.find(n => n.status === 'pending');
               this.history = items
-                .filter(n => n.notification_id !== pending.notification_id)
+                .filter(n => !pending || n.notification_id !== pending.notification_id)
                 .slice(0, 6)
                 .map(n => ({
                   time: this.formatTime(n.created_at),
                   cluster: n.digest?.cluster_name || n.cluster_id?.slice(0, 8),
-                  status: n.status || 'pending',
+                  status: n.status === 'acted' ? 'engaged' : (n.status || 'pending'),
                 }));
+              if (pending && this.applyNotification(pending)) {
+                return;
+              }
+              this.clearActiveInbox();
             })
             .catch(() => {});
         },
@@ -657,8 +1135,216 @@
             .catch(() => {});
         },
 
-        handleEvent(ev) {
+        refreshMetrics() {
+          fetch('/api/metrics?days=14')
+            .then(r => r.json())
+            .then(data => {
+              if (Array.isArray(data.sparkline) && data.sparkline.length) {
+                this.sparkline = data.sparkline;
+              }
+              if (typeof data.rate_change_pct === 'number') {
+                this.engagementDelta = Math.round(data.rate_change_pct);
+              }
+            })
+            .catch(() => {});
+        },
+
+        refreshGreeting() {
+          const now = new Date();
+          const hour = now.getHours();
+          const salutation = hour < 12 ? 'Good morning. ' : hour < 17 ? 'Good afternoon. ' : 'Good evening. ';
+          this.greeting = {
+            date: now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })
+              + ' · ' + now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+            salutation,
+          };
+        },
+
+        refreshGoogleStatus() {
+          fetch('/api/google/status')
+            .then(r => r.json())
+            .then(data => {
+              this.googleConnected = !!data.connected;
+              this.googleEmail = data.email || null;
+              const googleSvc = this.services.find(s => s.name === 'google');
+              if (googleSvc) {
+                googleSvc.status = data.connected ? 'ok' : 'warn';
+                googleSvc.email = data.email || null;
+              }
+            })
+            .catch(() => {});
+        },
+
+        refreshContext() {
+          fetch('/api/context')
+            .then(r => r.json())
+            .then(data => {
+              this.demoStub = !!(data._meta && data._meta.is_demo_stub);
+              this.context = {
+                gap: data.calendar_gap_minutes ?? 0,
+                surfaces: data.surfaces_today ?? 0,
+                budget: 3,
+                location: data.location_type || 'unknown',
+                nextMeeting: data.upcoming_event_title || '—',
+              };
+            })
+            .catch(() => {});
+        },
+
+        refreshClusters() {
+          fetch('/api/clusters')
+            .then(r => r.json())
+            .then(rows => {
+              if (!rows.length) {
+                this.clusters = [];
+                this.totalBookmarks = 0;
+                return;
+              }
+              this.clusters = rows.slice(0, 8).map(c => ({
+                name: c.name || c.cluster_id?.slice(0, 8) || 'Cluster',
+                count: String(c.member_count || 0),
+              }));
+              this.totalBookmarks = rows.reduce((sum, c) => sum + (c.member_count || 0), 0);
+            })
+            .catch(() => {});
+        },
+
+        runHeartbeat() {
+          if (this.listening) {
+            this.listeningLabel = 'Processing…';
+            this.listeningDetail = 'Running policy cycle — ranking clusters and checking gates.';
+          }
+          fetch('/api/heartbeat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+            .then(r => {
+              if (!r.ok) throw new Error(`heartbeat ${r.status}`);
+              return r.json();
+            })
+            .then(data => {
+              this.finishListening(data);
+              this.refreshNotifications();
+              this.refreshContext();
+            })
+            .catch(() => {
+              if (this.listening) {
+                this.finishListening({ status: 'KAIROS_OK', reason: 'Could not reach Kairos — will retry on the next cycle.' });
+              }
+            });
+        },
+
+        runDemoSurface() {
+          if (this.surfacing) return;
+          this.surfacing = true;
+          this.listening = true;
+          this.listeningLabel = 'Surfacing…';
+          this.listeningDetail = 'Resetting demo headspace and running one policy cycle.';
+          fetch('/api/demo/surface', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+            .then(r => {
+              if (!r.ok) throw new Error(`demo surface ${r.status}`);
+              return r.json();
+            })
+            .then(data => {
+              this.surfacing = false;
+              this.finishListening(data);
+              this.refreshNotifications();
+              this.refreshContext();
+              this.refreshBandit();
+              if (data.decision) {
+                this.updateLastDecisionFromActivity({
+                  ...data.decision,
+                  cluster_name: data.decision.digest?.cluster_name,
+                  should_surface: data.status === 'SURFACE',
+                });
+              }
+            })
+            .catch(() => {
+              this.surfacing = false;
+              if (this.listening) {
+                this.finishListening({ status: 'KAIROS_OK', reason: 'Demo surface failed — is the server running?' });
+              }
+            });
+        },
+
+        isSurfaceIndicator(ev) {
+          return ev.kind === 'indicator' && (ev.data?.status === 'alert' || ev.message === 'SURFACE');
+        },
+
+        logPrefix(ev) {
+          const map = {
+            session: 'cycle › ',
+            context: 'context › ',
+            pipeline: 'rank › ',
+            intelligence: 'llm › ',
+            activity: 'done › ',
+            indicator: 'out › ',
+            notification: 'deliver › ',
+            feedback: 'learn › ',
+            search: 'search › ',
+            cluster: 'cluster › ',
+            ingest: 'ingest › ',
+            tool_call: 'tool › ',
+            turn: 'agent › ',
+          };
+          return map[ev.kind] || 'kairos › ';
+        },
+
+        eventTone(ev) {
+          if (this.isSurfaceIndicator(ev) || ev.kind === 'notification') return 'success';
+          if (ev.kind === 'indicator') return 'dim';
+          if (ev.kind === 'intelligence') return 'intel';
+          if (ev.kind === 'feedback') return 'warn';
+          if (ev.data?.error) return 'error';
+          return 'normal';
+        },
+
+        narrateEvent(ev) {
+          if (ev.message && ev.message.length > 12) return ev.message;
+          const d = ev.data || {};
+          if (ev.kind === 'indicator') {
+            return d.reason ? `Staying silent — ${d.reason}.` : ev.message;
+          }
+          if (ev.kind === 'session') {
+            return d.status ? `Session finished (${d.status}).` : ev.message;
+          }
+          return ev.message || JSON.stringify(d).slice(0, 120);
+        },
+
+        pushActivity(ev) {
           const t = new Date(ev.timestamp).toLocaleTimeString([], { hour12: false });
+          this.activitySeq += 1;
+          this.activityLog.push({
+            id: `${ev.timestamp}-${this.activitySeq}`,
+            time: t,
+            prefix: this.logPrefix(ev),
+            line: this.narrateEvent(ev),
+            tone: this.eventTone(ev),
+            kind: ev.kind,
+            data: ev.data || {},
+          });
+          if (this.activityLog.length > 150) {
+            this.activityLog = this.activityLog.slice(-150);
+          }
+          this.$nextTick(() => {
+            const el = this.$refs.logStream;
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        },
+
+        updateLastDecisionFromActivity(data) {
+          if (!data) return;
+          this.lastDecision = {
+            cluster: data.cluster_id?.slice?.(0, 24) || '—',
+            clusterName: data.cluster_name || null,
+            surfaced: !!data.should_surface,
+            score: data.adjusted_score != null ? Number(data.adjusted_score).toFixed(2) : '—',
+            threshold: this.lastDecision.threshold,
+            banditP: this.bandit.pEngage,
+            gate: data.gate_reasons || {},
+          };
+        },
+
+        handleEvent(ev) {
+          this.pushActivity(ev);
+
           if (ev.kind === 'notification' && ev.data.digest) {
             this.applyNotification({
               notification_id: ev.data.notification_id,
@@ -667,48 +1353,108 @@
             this.refreshNotifications();
           }
           if (ev.kind === 'indicator') {
-            const reason = ev.data.reason || ev.message;
-            this.activityLog.unshift({
-              time: t,
-              kind: ev.message === 'SURFACE' ? 'SURFACE' : 'KAIROS_OK',
-              reason: reason,
-              cluster: this.lastDecision.cluster,
-              score: this.lastDecision.score,
-              gate: ev.message === 'SURFACE' ? 'PASS' : '—',
-            });
+            if (this.listening) {
+              if (this.isSurfaceIndicator(ev)) {
+                this.listeningLabel = 'Surfacing…';
+                this.listeningDetail = 'Found something worth your attention — preparing digest.';
+              } else {
+                this.finishListening({
+                  status: 'KAIROS_OK',
+                  reason: ev.data?.reason || ev.message,
+                });
+              }
+            }
           }
           if (ev.kind === 'activity') {
-            this.lastDecision = {
-              cluster: ev.data.cluster_id?.slice(0, 24) || '—',
-              score: ev.data.adjusted_score?.toFixed?.(2) ?? '—',
-              threshold: 0.12,
-              banditP: this.bandit.pEngage,
-              gate: ev.data.gate_reasons || {},
-            };
-            this.activityLog.unshift({
-              time: t,
-              kind: ev.data.should_surface ? 'SURFACE' : 'KAIROS_OK',
-              cluster: ev.data.cluster_id?.slice(0, 24),
-              score: ev.data.adjusted_score?.toFixed?.(2),
-              gate: ev.data.should_surface ? 'PASS' : '—',
-              reason: Object.entries(ev.data.gate_reasons || {})
-                .filter(([, v]) => !v)
-                .map(([k]) => k)
-                .join(', ') || 'all gates pass',
-            });
+            this.updateLastDecisionFromActivity(ev.data);
           }
           if (ev.kind === 'feedback') {
             this.refreshBandit();
             this.refreshNotifications();
           }
-          if (this.activityLog.length > 40) {
-            this.activityLog = this.activityLog.slice(0, 40);
-          }
+        },
+
+        refreshGepa() {
+          fetch('/api/optimize/runs?limit=1')
+            .then(r => r.json())
+            .then(rows => {
+              if (!rows || !rows.length) return;
+              const run = rows[0];
+              const delta = run.engagement_delta != null
+                ? (run.engagement_delta >= 0 ? '+' : '') + Math.round(run.engagement_delta * 100) + '% engagement'
+                : '—';
+              const v = run.is_optimized !== false ? 'optimized' : 'default';
+              this.gepa = {
+                version: 'v' + rows.length + ' · ' + v,
+                delta: delta,
+                before: run.prompt_before ? run.prompt_before.slice(0, 140) + '…' : '',
+                after: run.prompt_after ? run.prompt_after.slice(0, 140) + '…' : '',
+              };
+            })
+            .catch(() => {});
+        },
+
+        runGepa() {
+          if (this.gepaRunning) return;
+          this.gepaRunning = true;
+          fetch('/api/optimize', { method: 'POST' })
+            .then(r => r.json())
+            .then(res => {
+              this.gepaRunning = false;
+              this.refreshGepa();
+              if (res.diff_summary) {
+                this.pushActivity({
+                  timestamp: new Date().toISOString(),
+                  kind: 'intelligence',
+                  message: `GEPA prompt optimization finished — ${res.diff_summary.slice(0, 120)}`,
+                  data: { preview: res.diff_summary.slice(0, 120) },
+                });
+              }
+            })
+            .catch(() => { this.gepaRunning = false; });
         },
 
         init() {
+          this.refreshGreeting();
+          this.refreshMetrics();
           this.refreshNotifications();
           this.refreshBandit();
+          this.refreshGoogleStatus();
+          this.refreshContext();
+          this.refreshClusters();
+          this.refreshGepa();
+          fetch('/api/config')
+            .then(r => r.json())
+            .then(cfg => {
+              if (cfg.decision_interval_seconds) {
+                this.decisionInterval = cfg.decision_interval_seconds;
+              }
+              if (cfg.daily_surface_budget) {
+                this.context.budget = cfg.daily_surface_budget;
+              }
+              if (cfg.demo_mode) {
+                this.demoMode = true;
+              }
+              if (cfg.auto_heartbeat === false) {
+                this.autoHeartbeat = false;
+              }
+              if (cfg.surface_score_threshold != null) {
+                this.lastDecision.threshold = cfg.surface_score_threshold;
+              }
+              if (this.autoHeartbeat) {
+                this.runHeartbeat();
+                this.heartbeatTimer = setInterval(
+                  () => this.runHeartbeat(),
+                  this.decisionInterval * 1000,
+                );
+              } else if (this.demoMode) {
+                this.listeningLabel = 'Demo ready';
+                this.listeningDetail = 'Click Surface now when you\'re ready — or run `just demo-surface` in a terminal.';
+              }
+            })
+            .catch(() => {
+              if (this.autoHeartbeat) this.runHeartbeat();
+            });
           const es = new EventSource('/api/stream');
           es.onmessage = e => {
             try {

@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from kairos.config import settings
+from kairos.db.bandit import bandit_user_id
 from kairos.db.mongo import get_database
 from kairos.models.schemas import ContextSnapshot, FeedbackAction
 
@@ -18,6 +19,9 @@ async def ensure_feedback_indexes() -> None:
     await db[COLLECTION].create_index("notification_id")
     await db[COLLECTION].create_index([("context_class", 1), ("created_at", -1)])
     await db[COLLECTION].create_index([("cluster_id", 1), ("created_at", -1)])
+    await db[COLLECTION].create_index(
+        [("user_id", 1), ("context_class", 1), ("created_at", -1)]
+    )
 
 
 async def insert_feedback_event(
@@ -30,6 +34,7 @@ async def insert_feedback_event(
     derived_reward: float | None,
     notification_text: str,
     url: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     now = datetime.now(timezone.utc)
     event_id = str(uuid4())
@@ -42,6 +47,7 @@ async def insert_feedback_event(
     doc = {
         "event_id": event_id,
         "notification_id": notification_id,
+        "user_id": bandit_user_id(user_id),
         "cluster_id": cluster_id,
         "context_class": context_class,
         "context_snapshot": context_snapshot.model_dump(),
@@ -55,11 +61,17 @@ async def insert_feedback_event(
     return event_id
 
 
-async def list_snoozed_cluster_ids(context_class: str) -> list[str]:
-    """Cluster IDs snoozed for this context bucket within the TTL window."""
+async def list_snoozed_cluster_ids(
+    context_class: str,
+    *,
+    user_id: str | None = None,
+) -> list[str]:
+    """Cluster IDs snoozed for this user × context bucket within the TTL window."""
     since = datetime.now(timezone.utc) - timedelta(minutes=settings.snooze_ttl_minutes)
+    uid = bandit_user_id(user_id)
     cursor = get_database()[COLLECTION].find(
         {
+            "user_id": uid,
             "context_class": context_class,
             "events": {"$elemMatch": {"type": "snoozed"}},
             "created_at": {"$gte": since},

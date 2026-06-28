@@ -72,6 +72,8 @@ Kairos becomes an **interrupt policy layer** that any agent can query. "Is now a
 
 A system that works for Alex but fails Jordan is not generalizable — the gym surfaces that. That's a workshop paper, a benchmark release, or both.
 
+**Scaling the gym with PufferLib (when the policy outgrows the bandit).** Today's gym (`sim/`) runs the *real* ranking pipeline against MongoDB — correct, but slow, and deliberately matched to a bandit that converges in 20–100 observations. It is the wrong shape for deep RL. If we ever want to train a *neural* interrupt policy across many personas, the move is to reimplement the persona dynamics as a fast, pure-compute environment (no Mongo, no LLM in the hot loop) and host it in **[PufferLib](https://puffer.ai)** — high-throughput vectorized envs + PPO at millions of steps/sec. That buys the bridge from "bandit on sparse *real* feedback" to "policy *pretrained in simulation*, fine-tuned online" (ties to §6, LLM-as-prior). Honest caveat: PufferLib's value assumes a compute-bound simulator, so adopting it means *rebuilding* the gym divorced from the live pipeline — a real project, and pure scope creep for the bandit-first hackathon. It belongs here in the vision, not the build plan.
+
 ---
 
 ## 6. LLM as prior, bandit as likelihood
@@ -112,6 +114,29 @@ The entire pipeline can run locally:
 - No attention data leaves the device
 
 In a world where attention patterns are among the most sensitive behavioral data a person generates, local-first is a genuine differentiator — not just a checkbox.
+
+---
+
+## 9. Standards & BYO observability — two telemetry planes
+
+Kairos emits two kinds of signal, and they want different treatment:
+
+- **Policy plane** — `should_surface`, `gate_reasons`, `adjusted_score`, bandit `α/β` posteriors, `context_class`, `derived_reward`. This is the differentiated IP. **No OTEL/OpenInference vocabulary exists for "interrupt decision" or "bandit posterior,"** so it stays a domain schema (`feedback_events`, EventBus events). A generic APM dashboard pointed at this would render token counts and drop the decisions into untyped attributes — worse than the bespoke admin view.
+- **LLM / agent plane** — enrichment, digest generation, and the Antigravity tool-calling harness. This *is* standardizable. OpenInference (`openinference-instrumentation-google-genai`) and the OTEL GenAI conventions are the right vocabulary here.
+
+The two planes are joined by a **correlation id** (`decision_id`) threaded heartbeat → ranking → LLM call → notification → feedback. The join is what answers "how is the agent behaving in conjunction with the policy" — *this digest that got dismissed; what prompt, inputs, grounding, and latency produced it?* The same join is the GEPA training tuple: `(prompt_version, inputs, output) ⨝ (reward)`.
+
+**Why we don't adopt OTEL as the primary layer:** the EventBus is the decoupling seam, so an OTLP/OpenInference exporter for the LLM plane is an *additive fan-out consumer* — a ~1-day add the day an enterprise wants "bring your own observability stack," not a re-architecture. We keep the opinionated app posture now (our admin view is the differentiator) and expose the standards-compliant LLM-plane export as a roadmap item. The policy schema GEPA and the bandit depend on stays primary either way.
+
+```
+pipeline ──▶ EventBus ──┬──▶ SSE → admin dashboard          (today)
+                        ├──▶ OTLP/OpenInference → Phoenix…   (BYO, later)
+                        └──▶ webhook → customer sink         (later)
+```
+
+## 10. The self-improvement loop is self-contained — build, don't buy
+
+The automated observability → eval → optimization loop needs **no SaaS integrations**. Every stage is already in-house: EventBus + agent hooks (tracing), MongoDB (trace/dataset store), the admin dashboard (metrics), `rewards.py` + the gym personas (eval scoring), Claude Code `/loop` or Cloud Routine (scheduling). The only genuine dependency delta is the **optimizer**: either `dspy` (ships `dspy.GEPA`, lets us cite the ICLR 2026 paper, heavier install) or a hand-rolled ~80-line reflective loop driven by the Gemini client we already have (zero new deps, keeps the "we built the whole stack" story pure). Put `core/optimize.py` behind a thin interface so the two are interchangeable. Declining Langfuse/LangSmith/Phoenix/Braintrust is deliberate — they'd duplicate the layer that *is* our demo and dilute the pitch into "we configured someone's SDK."
 
 ---
 
