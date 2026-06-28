@@ -1,0 +1,21 @@
+pyproject.toml
+  s_df4a3bfadc9022::t_62466b4707774f 27
+uv.lock
+  s_df4a3bfadc9022::t_61ab19c13fc009 13-21,62-70,84-92,284-358,489-510,526-543,562-570,596-636,646-669,1085-1142,1229,1263,1279-1364,1475-1578,1654-1719,1754-1796,2149-2250,2278-2323,2458-2523,2598-2639,2662-2670,3159-3171,3218-3232,3255-3268,3282-3290,3426-3434,3601-3609,3720-3728
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "66f48ecb4420f3bfc0d8b1f41a0c34270db196a8",
+  "prompts": {},
+  "sessions": {
+    "s_df4a3bfadc9022": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f0c29-a5c7-7583-8852-576a463d292c",
+        "model": "unknown"
+      },
+      "human_author": "Rohit Nair <6954311+rnair98@users.noreply.github.com>"
+    }
+  }
+}
