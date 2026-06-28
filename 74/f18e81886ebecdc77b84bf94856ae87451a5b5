@@ -1,0 +1,49 @@
+docs/demo-readiness/DEMO.md
+  s_df4a3bfadc9022::t_0fef5f6efc70a7 62,105
+README.md
+  s_df4a3bfadc9022::t_6ecded359fbb96 136
+  s_df4a3bfadc9022::t_e4aa4e07b137ba 1-2,5-29,31-46,49,51,55-104,106,108,110,112-135,137-173,176-195,197-206
+docs/demo-readiness/FAQ.md
+  s_df4a3bfadc9022::t_94fe39f599223e 86,89,118
+docs/GOOGLE_WORKSPACE_SETUP.md
+  s_df4a3bfadc9022::t_4e78bc777f1445 71,73
+docs/ARCHITECTURE.md
+  s_df4a3bfadc9022::t_471a7ad9d37f1d 768,784-785,789,812,815,828
+  s_df4a3bfadc9022::t_a7fed2f66d82db 488-490,505-507,584,601,634,684-693,716,772,774,793,860-862
+PLAN.md
+  s_df4a3bfadc9022::t_2ca76b8ad1aa45 536-537
+  s_9878790b1180ce::t_9c03548fc23b99 366-367,369-370,372-375,379,381
+  s_9878790b1180ce::t_636d2e092b0815 612-715
+  s_df4a3bfadc9022::t_aac23e5f47df8e 368,371
+  s_9878790b1180ce::t_f4e1a5cbc8bd03 394
+  s_df4a3bfadc9022::t_6929a45db4558a 573-586,588,595-596,599
+  s_9878790b1180ce::t_5500fc2a8754c9 587,589-594,597-598,600
+  s_df4a3bfadc9022::t_448a2e2983d250 397,401,403-405,422,424,426,473,486,522,530-535,542-547
+docs/TECH_DEBT.md
+  s_df4a3bfadc9022::t_1bdca62db89aa1 98-99
+  s_df4a3bfadc9022::t_7b7a2a2631065d 94,96,104-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "74f18e81886ebecdc77b84bf94856ae87451a5b5",
+  "prompts": {},
+  "sessions": {
+    "s_9878790b1180ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "814afe08-6e85-4d71-bcf6-b1c20b0acf40",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Rohit Nair <6954311+rnair98@users.noreply.github.com>"
+    },
+    "s_df4a3bfadc9022": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f0c29-a5c7-7583-8852-576a463d292c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Rohit Nair <6954311+rnair98@users.noreply.github.com>"
+    }
+  }
+}
