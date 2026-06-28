@@ -83,10 +83,10 @@ A: ✅ `just demo` → inbox at `http://127.0.0.1:8420`. Snooze/dismiss → `/ap
 A: ✅ `uv run kairos mcp` — see `docs/MCP_SETUP.md` and [DEMO.md](./DEMO.md) § MCP. Calendar via Kairos `sync_google_headspace`.
 
 **Q: GEPA / nightly self-improvement?**  
-A: ✅ Eval harness + `kairos optimize run|readiness|eval` + `POST /api/optimize` + admin panel. Needs ≥ `GEPA_MIN_SAMPLES` feedback events. Nightly automation not wired yet.
+A: ✅ Eval harness + `kairos optimize run|readiness|eval|nightly` + `POST /api/optimize` + admin panel. Needs ≥ `GEPA_MIN_SAMPLES` feedback events. `optimize nightly` is cron-safe; Cloud Scheduler wiring is deployment work.
 
 **Q: Incremental sync / re-embed on change?**  
-A: 🚧 Fingerprints + `kairos bookmarks prep` exist; X sync paginates full corpus unless `max_pages` set; bookmark cursor incremental sync not on CLI yet.
+A: ✅ Fingerprints + `kairos bookmarks prep --sync` exist; prep sync is incremental by default and `--full-sync` forces full X pagination. Re-enrich/re-embed skip unchanged rows by fingerprint.
 
 ---
 
@@ -115,7 +115,7 @@ A: HDBSCAN with `min_cluster_size=3`; dense topics merge (51-member "software-en
 A: ✅ Online contextual bandit — dismiss/snooze/click update α/β in `bandit_params`; Thompson sampling on next heartbeat. No gradient steps on Gemini.
 
 **Q: What's the Self-Improvement Stack?**  
-A: ✅ `feedback_events` + bandit online updates + EventBus → SSE admin feed + engagement sparkline from gym + GEPA eval harness. 🚧 Automated nightly GEPA cron.
+A: ✅ `feedback_events` + bandit online updates + EventBus → SSE admin feed + engagement sparkline from gym + GEPA eval harness + cron-safe `kairos optimize nightly`.
 
 **Q: Is this Recursive Intelligence / weight RSI?**  
 A: Honest scope: prompt-level self-improvement via GEPA, not model weight training. Bandit is policy RSI at the application layer.

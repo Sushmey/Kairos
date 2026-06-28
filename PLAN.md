@@ -363,12 +363,22 @@ CLI: `kairos sim run --days 14 --personas alex,maya,jordan` · `kairos sim reset
 
 ## Current Demo Build State
 
+| Dimension | Score | Status | Gap |
+|-----------|-------|--------|-----|
+| Continual Learning thesis | 9/10 | ✅ Bandit + feedback loop + snooze label | Learning curve exists; annotate the “dismiss → β update” beat more explicitly |
+| Self-Improvement Stack | 7/10 | ✅ GEPA shipped end-to-end | Admin GEPA panel skips silently when feedback < threshold; no readiness count shown |
+| Differentiation from median | 8/10 | ✅ GAMBITTS-lite + cohort priors | Treatment-lift panel not in UI; cohort-prior activation not surfaced |
+| Demo-readiness | 6/10 | ✅ Runbook exists | Gym and at least one GEPA diff must be pre-seeded before demo |
+| Judge "wow" moment | 6/10 | ✅ Bandit α/β panel + GEPA diff | No single visual that shows the policy learned something; trend data exists but isn't annotated |
+
+**Target: 10/10 all dimensions.** See [Finish Line Sprint](#finish-line-sprint-1010-checklist) below.
+
 | Theme proof | Status | Artifact |
 |-------------|--------|----------|
 | Continual learning | ✅ Proven | `feedback_events` → `bandit_params`; dismiss increments β live |
-| Treatment learning | ✅ Partial/proven | `bandit_treatments` keyed by digest style |
+| Treatment learning | ✅ Partial | `bandit_treatments` keyed by digest style; treatment-lift panel pending |
 | Self-improvement stack | ✅ Proven | EventBus/SSE, persisted `pipeline_events`, `/api/metrics`, sim gym |
-| Prompt self-improvement | ✅ Partial/proven | `kairos optimize run`, `kairos optimize nightly`, `/api/optimize`, `optimization_runs` |
+| Prompt self-improvement | ✅ Partial | `kairos optimize run/nightly`, `/api/optimize`; readiness indicator pending |
 | Exact LLM trace join | 🚧 Future | `decision_id` / OpenInference-style trace plane |
 
 The active runbook is [docs/demo-readiness/DEMO.md](docs/demo-readiness/DEMO.md). Historical phase reviews live under [docs/archive/hackathon/](docs/archive/hackathon/).
@@ -381,18 +391,18 @@ Force-multiplier upgrades distilled from two independent research passes (this r
 
 | # | Upgrade | Research basis | What it fixes | Primary files | Effort |
 |---|---------|----------------|---------------|---------------|--------|
-| **R1** | GAMBITTS-lite — action vs. treatment | Generator-Mediated Bandits (2025); Action-Centered TS (Greenewald–Murphy, NeurIPS 2017) | Bandit only learns from `cluster_id`; the LLM **digest** (the actual treatment) is unlearned | `db/bandit.py`, `core/feedback.py`, `core/ranking.py` | Med |
+| **R1** | GAMBITTS-lite — action vs. treatment | Generator-Mediated Bandits (2025); Action-Centered TS (Greenewald–Murphy, NeurIPS 2017) | ✅ Shipped secondary treatment posterior by `digest_style`; treatment-lift panel is Finish Line Sprint D | `db/bandit.py`, `core/feedback.py`, `web/app.py`, `index.html` | Done / Sprint D |
 | **R2** | Linear Thompson Sampling | LinUCB (Li 2010 — news timing); Linear TS (Agrawal–Goyal 2013) | Discrete `context_class` buckets fragment sparse feedback; similar moments share zero signal | `core/bandit.py`, `db/bandit.py`, `core/moment.py`, `core/ranking.py` | Med |
 | **R3** | Sleep-time-lite | Sleep-time Compute (Lin 2025); Letta dual-agent | Live SURFACE path is 20–40s (moment-fit + grounding + digest) | `core/sleep_cache.py`, `core/context.py`, `core/ranking.py` | Low–Med |
-| **R4** | GEPA + `llm_traces` | GEPA (Agrawal 2026); Letta Context Repositories | Recursive Intelligence theme = NONE; admin GEPA panel still mock | `core/optimize.py`, `db/llm_traces.py`, `db/optimization_runs.py`, `POST /api/optimize` | Med–High |
+| **R4** | GEPA + trace join | GEPA (Agrawal 2026); Letta Context Repositories | ✅ Prompt diff loop shipped; remaining trace join would make prompt→output→reward exact | `core/optimize.py`, `db/optimization_runs.py`, future trace table | Partial |
 
 ### R1 — GAMBITTS-lite (the standout — both passes converged here)
 
-The thesis split made learnable: an interrupt is **action** (which cluster) × **treatment** (the digest the user actually saw). Today the bandit updates only on `cluster_id`, so a good cluster with a weak digest and a good cluster with a strong digest are indistinguishable.
+The thesis split made learnable: an interrupt is **action** (which cluster) × **treatment** (the digest the user actually saw). Kairos now updates both the cluster posterior and a secondary `bandit_treatments` posterior keyed by `digest_style`, so GEPA rewrites can become measurable as treatments.
 
-- Embed the generated digest (or bucket by a `digest_style` tag from `generate_cluster_digest`) and extend the bandit key from `(user × cluster × context_class)` to `(… × treatment_bucket)`, or maintain a small treatment-effect term added to the cluster posterior.
-- Update the posterior on `feedback_events` using both the cluster *and* the observed digest treatment.
-- **Why it's #1:** most thesis-pure (separates *when/what to interrupt* from *how it reads*), and it is the bridge between the bandit loop and the GEPA loop — R4's prompt rewrites become *measurable* as a treatment effect here.
+- Current: update the posterior on `feedback_events` using both the cluster and observed digest style.
+- Next: expose treatment lift in Admin (`grounded` vs `runtime_fast` vs future prompt versions).
+- **Why it matters:** it bridges the bandit loop and the GEPA loop — prompt rewrites become measurable as a treatment effect rather than a vibes-based copy change.
 
 ### R2 — Linear Thompson Sampling (the bandit-quality upgrade both surveys under-weighted)
 
@@ -409,11 +419,11 @@ Pre-materialize the expensive intelligence while idle so heartbeats stay fast. *
 - Trigger on headspace sync / `POST /api/context/fuse` / cron — **not** every heartbeat. Invalidate on calendar change, fatigue/snooze delta, or fingerprint mismatch.
 - Pair with defaulting `INTELLIGENCE_MOMENT_FIT_CHECK=false` for the demo (removes the 2nd sequential Gemini call). `moment_narrative`+TTL is already a partial implementation to build on.
 
-### R4 — GEPA + `llm_traces` (the only Recursive-Intelligence coverage)
+### R4 — GEPA + trace join (Recursive-Intelligence coverage)
 
-The offline prompt-RSI loop (see [Two Self-Improvement Loops](#two-self-improvement-loops)). `core/optimize.py` runs a reflective pass over the `generate_cluster_digest` prompt, scored on `feedback_events` (gym-generated), emitting a real `v1→v2` diff with measured engagement delta into `optimization_runs` → un-hides the admin GEPA panel. The `decision_id`-keyed `llm_traces` plane supplies the `(prompt → output → reward)` tuples; with R1 in place, GEPA's rewrites register as a measurable treatment effect. Hand-rolled reflect loop (Gemini) keeps it zero-dep; DSPy's `GEPA` is the alternative.
+The offline prompt-RSI loop (see [Two Self-Improvement Loops](#two-self-improvement-loops)). `core/optimize.py` runs a reflective pass over the digest prompt, scored on recent `feedback_events`, emitting a real prompt diff into `optimization_runs` and the admin GEPA panel. `kairos optimize nightly` is cron-safe and skips when feedback is insufficient. The remaining research-grade upgrade is an exact trace join: prompt version + model input + model output + reward for every decision.
 
-**Build order R1 → R2 → R3 → R4.** R1 is the highest force-multiplier and is the substrate R4 measures against; R2 is independent and gym-A/B-able; R3 de-risks demo latency; R4 closes the second loop and the last theme gap. Deferred (post-traction): delayed-feedback bandit updates (Bootstrap TS, UAI 2024), latent-receptivity POMDP / restless-bandit LTV, TIM intra-day scheduling, recharging bandits for habituation, doubly-robust off-policy evaluation. Full survey + citations: `docs/archive/research/CURSOR.md`.
+**Next order:** treatment lift dashboard → trace join → linear/contextual bandit A/B → sleep-time cache. Deferred (post-traction): delayed-feedback bandit updates (Bootstrap TS, UAI 2024), latent-receptivity POMDP / restless-bandit LTV, TIM intra-day scheduling, recharging bandits for habituation, doubly-robust off-policy evaluation. Full survey + citations: `docs/archive/research/CURSOR.md`.
 
 ---
 
@@ -460,7 +470,7 @@ Single page, two panes. `EventBus` is already wired — FastAPI SSE endpoint str
 └─────────────────────────┴──────────────────────────────────┘
 ```
 
-**Admin trace inspector (`TRACE · LEARNING` tabs).** The activity feed is the spine; clicking any event opens that `decision_id`'s full trace in the right pane as a **vertical descent rail** — policy nodes and the LLM-call node interleaved in execution order on one line, which is the visual form of the two-plane join. One amber node (the `◆ generate` LLM call) among dim policy nodes; per-node latency makes the agent's cost legible at a glance (`2,310ms` LLM vs sub-20ms policy). `KAIROS_OK` decisions trace to the failing gate node (why it stayed silent is first-class). The `◇ outcome` node is hollow until feedback lands, then fills in and back-propagates the `β` delta — the learning loop is something you watch on the rail.
+**Admin learning view.** The activity feed is the spine: it shows context reads, ranking, gates, digest generation, delivery, and feedback as SSE events. Side panels show live context, clusters, engagement trend, bandit α/β, and GEPA prompt diffs. A future trace inspector can turn persisted `pipeline_events` into a per-decision rail with model latency and prompt/output joins.
 
 ```
 │ ● context   desk·gap42m·dens0.3      2ms
@@ -473,9 +483,7 @@ Single page, two panes. `EventBus` is already wired — FastAPI SSE endpoint str
 │            bandit β 4.1 → 4.5
 ```
 
-`TRACE` = inspect one decision (above). `LEARNING` = aggregate self-improvement (GEPA diff + engagement curve + bandit posteriors). The rail renders live only with the Phase A.5 `llm_traces` data — built together so it's real, not a mock. Layout/data contract: `docs/demo-readiness/` design notes.
-
-`kairos serve` ✅ ships the FastAPI app (`web/app.py`): SSE, inbox, `/api/feedback`, `/api/bandit`. Remaining: `/api/metrics`, `/api/trace/{decision_id}`, `/api/optimize`.
+`kairos serve` ✅ ships the FastAPI app (`web/app.py`): SSE, inbox, `/api/demo/surface`, `/api/feedback`, `/api/bandit`, `/api/metrics`, `/api/optimize`, `/api/prep/start`, and `/api/prep/{job_id}`. Remaining optional polish: `/api/trace/latest` and treatment-lift visualization.
 
 ### MCP Server (FastMCP)
 
@@ -511,7 +519,7 @@ Custom scheduler eliminated. Three Claude Code mechanisms replace it:
 |-----|-----------|----------|
 | Context poll + heartbeat (demo) | Claude Code `/loop 5m` → MCP `run_heartbeat` | 5 min |
 | Context poll + heartbeat (prod) | Desktop Scheduled Task → `kairos heartbeat` | 5 min |
-| Nightly GEPA sleep-time pass | Cloud Routine → `POST /optimize` | Daily 2am |
+| Nightly GEPA pass | `kairos optimize nightly` / `just optimize-nightly` / Cloud Run cron | Daily 2am |
 
 ---
 
@@ -519,24 +527,24 @@ Custom scheduler eliminated. Three Claude Code mechanisms replace it:
 
 | Component | Tool | Status |
 |-----------|------|--------|
-| Persistence | MongoDB Atlas | config wired, collections TODO |
-| Vector search | Atlas `$vectorSearch` | TODO |
-| Embeddings | `sentence-transformers` all-MiniLM-L6-v2 | TODO |
-| Clustering | HDBSCAN | TODO |
-| Bandit | Thompson sampling (scikit-learn, ~50 lines) | TODO |
-| Prompt optimization | DSPy + GEPA | TODO |
-| LLM — enrichment | Gemini flash-lite via `google-genai` Interactions API | done (stub input) |
-| LLM — digest generation | Gemini flash via `google-genai` Interactions API | done (stub input) |
+| Persistence | MongoDB Atlas | done |
+| Vector search | Atlas `$vectorSearch` with in-memory fallback | done |
+| Embeddings | Gemini default; local BGE optional | done |
+| Clustering | HDBSCAN + stable centroid reuse | done |
+| Bandit | Thompson sampling α/β + cohort prior + treatment posterior | done |
+| Prompt optimization | Hand-rolled GEPA-style reflection + fixture eval | done |
+| LLM — enrichment | Gemini flash-lite via `google-genai` Interactions API | done |
+| LLM — digest generation | Gemini flash via `google-genai` Interactions API | done |
 | Agent harness | Antigravity SDK (`google-antigravity`) | done |
 | Observability | EventBus in-process pub/sub → SSE | done |
 | Delivery — web | WebDeliveryAdapter → EventBus | done |
 | Delivery — OS | OSDeliveryAdapter (terminal-notifier / notify-send) | done |
-| Calendar | Google Workspace MCP (`list_events`) | TODO |
-| Geo | `geopy` for geocoding, manual toggle for demo | TODO |
-| Ingest | X API `GET /2/users/{id}/bookmarks` | TODO |
-| API backend | FastAPI + SSE (`kairos serve`) | stub |
-| MCP server | FastMCP wrapping `ALL_TOOLS` | TODO |
-| Scheduling | Claude Code `/loop` + Desktop Task + Cloud Routine | TODO |
+| Calendar/Gmail | Google OAuth + Kairos MCP/ADK fuse paths | done |
+| Geo | Manual/geofence-style context anchors | partial |
+| Ingest | X API `GET /2/users/{id}/bookmarks` | done |
+| API backend | FastAPI + SSE (`kairos serve`) | done |
+| MCP server | FastMCP wrapping Kairos tools | done |
+| Scheduling | `/loop`, local cron, Cloud Run cron-safe commands | partial |
 
 ---
 
@@ -562,95 +570,34 @@ Be explicit: real learning takes weeks; the simulator compresses it to 3 minutes
 
 ---
 
-## What's Done vs. TODO
+## What's Done vs. Next
 
-### Done
-- `models/schemas.py` — all Pydantic models (ContextSnapshot, ClusterDigest, HeartbeatResult, etc.)
-- `observability/bus.py` — EventBus: async pub/sub, history, SSE stream
-- `core/heartbeat.py` — HeartbeatService orchestration, record_feedback stub
-- `core/ranking.py` — SurfaceDecision structure, gate logic stub
-- `core/context.py` — ContextSnapshot builder stub
-- `core/notifications.py` — in-memory notification store (MongoDB TODO)
-- `delivery/base.py` — DeliveryAdapter protocol
-- `delivery/registry.py` — adapter registry, resolve_adapters
-- `delivery/web.py` — WebDeliveryAdapter → EventBus
-- `delivery/os.py` — OSDeliveryAdapter (terminal-notifier + notify-send)
-- `delivery/render.py` — digest_to_markdown, build_delivery_hints, ok_reason
-- `llm/client.py` — shared genai.Client singleton
-- `llm/generation.py` — enrich_bookmark + generate_cluster_digest (Interactions API, structured output)
-- `agent/prompts.py` — SYSTEM_INSTRUCTIONS, DECISION_TURN_PROMPT
-- `agent/hooks.py` — post_tool_call + post_turn → EventBus
-- `agent/config.py` — LocalAgentConfig factory (tools, hooks, response_schema=HeartbeatResult)
-- `agent/tools.py` — ALL_TOOLS: 6 dual-use functions (Antigravity + FastMCP)
-- `agent/harness.py` — run_decision_cycle (direct) + run_decision_cycle_via_agent (Antigravity)
-- `cli.py` — heartbeat / cycle / agent-cycle / chat / serve commands
-- `config.py` — pydantic-settings: Gemini, MongoDB, delivery, budget, intervals
+### Shipped
+- MongoDB repositories for bookmarks, clusters, notifications, feedback, bandit params, treatment params, context cache, Google tokens, prep jobs, pipeline events, and optimization runs.
+- X OAuth + incremental bookmark sync; `kairos bookmarks prep` for enrich → research → embed → cluster.
+- Fixed embedding space with Gemini default and local BGE optional; HDBSCAN clustering with centroid reuse.
+- Policy core: headspace preparation, vector ranking, Thompson sampling, hard gates, snooze filtering, digest generation, and `KAIROS_OK` as a first-class outcome.
+- Online learning: dismiss/snooze/click feedback writes `feedback_events` and updates bandit α/β.
+- Treatment learning: digest style writes a secondary `bandit_treatments` posterior.
+- Dashboard: `/api/demo/surface`, SSE admin feed, inbox feedback, metrics sparkline, bandit panel, GEPA panel, and prep jobs.
+- MCP + ADK paths: direct policy tools via Kairos MCP; optional ADK `--via-agent` path for Workspace MCP sensor fusion.
+- Self-improvement: persona gym, `/api/metrics`, `kairos optimize run|readiness|eval|nightly`, `/api/optimize`, and `optimization_runs`.
 
-### TODO (build order)
-1. **MongoDB wiring** — motor async client, upsert to all collections, swap in-memory store
-2. **X API ingest** — `GET /2/users/{id}/bookmarks`, normalize, call `enrich_bookmark`, upsert
-3. **Embeddings + clustering** — sentence-transformers on ingest, HDBSCAN nightly, update clusters collection
-4. **Atlas `$vectorSearch`** — wire ranking.py steps 1–2
-5. **Thompson sampling bandit** — wire ranking.py step 3, bandit_params online update in record_feedback
-6. **Google Workspace MCP** — calendar connector in agent config, parse into ContextSnapshot in context.py
-7. **FastAPI web server** — `kairos serve`: SSE endpoint streaming EventBus, notification inbox, metrics
-8. **FastMCP server** — thin wrapper over ALL_TOOLS, wire into Claude Code MCP
-9. **GEPA optimization loop** — POST /optimize endpoint, DSPy + GEPA over feedback_events eval set
-10. **Synthetic persona + simulator** — seed feedback_events for demo curve
-11. **Claude Code `/loop` wiring** — MCP connected, loop prompt tested
+### Remaining before judges
+See [Finish Line Sprint](#finish-line-sprint-1010-checklist) for implementation details.
 
----
+1. **Seed gym + research:** `kairos sim run --days 7` → populates sparkline + GEPA feedback pool. `just demo-corpus` (≥ 20 bookmarks) → populates researched link cards.
+2. **Build trend annotation + snooze callout** (Continual Learning → 10): sparkline slope + `rate_change_pct` badge; SSE snooze event with timing-label semantics.
+3. **Build treatment-lift mini-panel** (Differentiation → 10): compact table in Admin showing `p_engage` by `digest_style` from `bandit_treatments`.
+4. **Build GEPA readiness indicator** (Self-Improvement → 10): show feedback count + min-required in GEPA panel before any run; load via `GET /api/optimize/readiness`.
+5. **Wire gym seed into demo-serve** (Demo-readiness → 10): `just demo-serve` auto-runs `just demo-seed-gym` when `feedback_events` collection is empty.
 
-## Build Order (Hackathon Sequencing)
-
-### Hour 0–2: MongoDB + Ingest
-- [ ] Motor async client, connection from `MONGODB_URI`
-- [ ] Swap `core/notifications.py` in-memory store → MongoDB upsert
-- [ ] X API ingest: paginated `GET /2/users/{id}/bookmarks`, normalize to bookmark schema
-- [ ] Call `enrich_bookmark` per bookmark, upsert to `bookmarks` collection
-- [ ] **Eval harness**: fixed context×cluster pairs with synthetic ground truth
-
-### Hour 2–5: Embeddings + Ranking
-- [ ] sentence-transformers embed at ingest, store on bookmark doc
-- [ ] HDBSCAN cluster, upsert `clusters` collection + centroid embeddings
-- [ ] Atlas `$vectorSearch` index on `bookmarks.embedding`
-- [ ] Wire ranking.py steps 1–2 (feasibility filter + vector search)
-- [ ] Thompson sampling bandit in ranking.py step 3, gate step 4
-
-### Hour 5–8: Calendar + Context
-- [ ] Google Workspace MCP connector in `agent/config.py`
-- [ ] `context.py`: call `list_events` tool → parse gap, density, upcoming title → ContextSnapshot
-- [ ] Location toggle (manual enum, geofence stretch)
-- [ ] Wire `record_feedback` → write `feedback_events` + bandit online update
-
-### Hour 8–12: Delivery + FastAPI
-- [ ] FastAPI app: `GET /events` SSE from EventBus, `GET /notifications`, `POST /feedback`
-- [ ] `GET /n/{notification_id}` — notification deep-link for DeliveryHints dashboard_url
-- [ ] Two-pane dashboard HTML (SSE stream → activity log, notification history)
-- [ ] Chart.js engagement rate chart from MongoDB aggregation
-
-### Hour 12–18: MCP + GEPA
-- [ ] FastMCP server wrapping ALL_TOOLS, add to Claude Code MCP config
-- [ ] Claude Code `/loop 5m` prompt wired to MCP `run_heartbeat`
-- [ ] `POST /optimize` endpoint: DSPy + GEPA over feedback_events eval set
-- [ ] Cloud Routine calling `/optimize` nightly
-- [ ] `optimization_runs` write + diff view in dashboard
-
-### Hour 18–24: Demo Prep
-- [ ] Synthetic persona + feedback simulator (2 weeks of events)
-- [ ] MongoDB aggregation for engagement chart
-- [ ] Demo script + stage choreography
-- [ ] "What I learned" diff as closing slide
-
-### Hour 24–36: Polish
-- [ ] Restraint budget learning from feedback history
-- [ ] Calendar pull mode (event title → cluster dossier, bypasses gate)
-- [ ] Geo-anchor extraction at ingest + geofence trigger
-
-### Hour 36–48: Stretch
-- [ ] Live X API sync (paginated polling)
-- [ ] Real geofence (GPS toggle)
-- [ ] Additional sources (Pocket, Readwise export)
+### Post-hackathon
+- Exact LLM trace join (`decision_id`, prompt version, model input/output, latency, reward).
+- Linear/contextual Thompson sampling A/B in the gym (R2).
+- Sleep-time cache for precomputed candidate digests and lower heartbeat latency (R3).
+- More ingest sources (Readwise, Pocket, browser export).
+- Treatment-lift trend across GEPA prompt versions (R1 post-polish).
 
 ---
 
@@ -659,6 +606,110 @@ Be explicit: real learning takes weeks; the simulator compresses it to 3 minutes
 1. **Eval harness before the bandit.** No yardstick = no demo. Build the fixed test set from the synthetic persona in hour 1.
 2. **Snooze capture before hour 3.** Right-thing-wrong-time is the most informative timing label. Every other team will miss it.
 3. **Make learning visible.** The optimization_runs prompt diff — rendered in the dashboard — is worth more on stage than any accuracy number. Show the machine editing itself.
+
+---
+
+## Finish Line Sprint (10/10 checklist)
+
+Five contained additions that close each gap. Ordered by dependency — E first because it populates the data all other panels depend on.
+
+---
+
+### E — Auto-seed gym in demo-serve + research floor → Demo-readiness 10/10
+
+**What:**
+1. In `Justfile`, update `demo-prep` to check whether `feedback_events` has sim events; if empty, run the gym automatically. Gate behind `SKIP_GYM` (already the convention):
+   ```bash
+   # In demo-prep recipe — after corpus step, before serve:
+   if [[ "${SKIP_GYM:-0}" != "1" ]]; then
+     echo "▸ Seeding persona gym (7 days × 3 personas)…"
+     uv run kairos sim run --days 7 --personas alex,maya,jordan
+   fi
+   ```
+2. Add `DEMO_RESEARCH_LIMIT=20` to `.env.demo` so `just demo-corpus` always researches at least 20 bookmarks (currently unset — research silently skips).
+
+**Why:** Every other panel depends on `feedback_events` being populated: sparkline needs days of data, GEPA needs a feedback pool, treatment-lift needs per-style events. Without auto-seeding, `just demo-serve` on a fresh clone produces an empty admin that tells no story. One command → everything works.
+
+---
+
+### A — Learning curve trend annotation → Continual Learning 10/10
+
+**What:** In `index.html` `refreshMetrics()`, compute a linear regression slope over `sparkline[]` (5 lines of vanilla JS — no library). Render a badge above the bars:
+
+```
+↑ +18% engagement trend   or   ↓ −5% engagement trend
+```
+
+Also surface the existing `rate_change_pct` from `/api/metrics` as a `"last 7d vs prior 7d"` chip in the sparkline subtitle. The value is already computed in `db/metrics.py::rate_change_pct()` and returned in the payload.
+
+**Why:** Judges see raw bars and don't mentally connect them to a learning story. An annotated slope turns the chart from a histogram into a policy convergence curve — the central claim of Continual Learning made visible in 2 seconds.
+
+---
+
+### B — Snooze-as-label SSE callout + UI tooltip → Continual Learning 10/10
+
+**What:**
+1. In `core/feedback.py`, in the snooze branch (~line 112), add an SSE emit after the cluster re-queue:
+   ```python
+   event_bus.emit(
+       "intelligence",
+       f"Snooze stored as timing label for «{ctx_class}» — "
+       "cluster queued for next matching context; no topic penalty applied.",
+       snooze=True, cluster_id=record.cluster_id, ctx_class=ctx_class,
+   )
+   ```
+2. In `index.html`, add `title="Tells the bandit: right topic, wrong moment — no cluster penalty"` to the Snooze 2h button.
+
+**Why:** The snooze reward is `None` in `rewards.py` — the most deliberate design decision in the whole reward table. Judges watching the admin feed currently see a snooze fire and have no idea it's semantically distinct from dismiss. One SSE line makes it legible without any screen time.
+
+---
+
+### C — GEPA readiness indicator → Self-Improvement Stack 10/10
+
+**What:**
+1. Add `GET /api/optimize/readiness` to `web/app.py` — calls `feedback_readiness(days=14)` from `core/eval_harness.py`, returns `GepaReadiness` JSON.
+2. In `index.html` GEPA panel, call this endpoint in `init()` and display:
+   - `gepa_ready=false`: amber chip — *"12 / 30 events — run gym to enable GEPA"*
+   - `gepa_ready=true`: green chip — *"Ready — 47 events collected"*
+
+State: add `gepaReady: null, gepaReadyCount: 0, gepaMinSamples: 30` to the Alpine component.
+
+**Why:** Currently the GEPA panel looks the same whether there are 0 or 200 feedback events. Judges who click "Run optimization" on a cold corpus get a silent skip. The readiness chip explains why it's not running, tells them what to do, and turns green after the gym seeds — itself a signal that real feedback has been collected and the self-improvement loop is primed.
+
+---
+
+### D — Treatment-lift mini-panel → Differentiation 10/10
+
+**What:**
+1. Add `GET /api/bandit/treatments` to `web/app.py` — queries `bandit_treatments`, groups by `digest_style`, computes `p_engage = alpha / (alpha + beta)`, returns sorted by `p_engage` desc.
+2. In `index.html` admin Bandit panel, below the existing α/β display, add a compact table:
+   ```
+   Treatment lift (digest style)
+   ─────────────────────────────────────
+   grounded        ████████░░  p=0.74  n=23
+   context_primed  ██████░░░░  p=0.61  n=18
+   standard        ████░░░░░░  p=0.48  n=31
+   evergreen       ███░░░░░░░  p=0.39  n=12
+   ```
+   Render each row as a mini progress bar (`width: p*100%`) and `p_engage` + sample count text.
+
+**Why:** GAMBITTS-lite is the single feature that bridges the bandit loop and the GEPA loop — prompt rewrites become measurable as treatment effects rather than vibes-based copy changes. Without a visible panel, judges see sophisticated code but get nothing on stage. This table turns it into a talking point: *"The grounded treatment wins by 26 points — that's why GEPA rewrites toward web-grounded rationales."*
+
+**Where:** `web/app.py` (one GET route); `index.html` (`treatments: []` state + fetch in `init()` + render block below bandit panel).
+
+---
+
+### Completion order and estimated effort
+
+| Step | File(s) | Effort |
+|------|---------|--------|
+| E — gym auto-seed | `Justfile`, `.env.demo` | 15 min |
+| A — trend annotation | `index.html` | 20 min |
+| B — snooze callout | `core/feedback.py`, `index.html` | 15 min |
+| C — GEPA readiness | `web/app.py`, `index.html` | 25 min |
+| D — treatment panel | `web/app.py`, `index.html` | 30 min |
+
+Total: ~105 min of implementation. All contained; no schema changes; no new collections.
 
 ---
 

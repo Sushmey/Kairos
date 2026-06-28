@@ -91,16 +91,26 @@ Typed shapes under `src/kairos/models/`:
 
 ---
 
-## What's next (P3)
+## Delivered after P0–P2
 
-Prioritized after P0–P2 landing. See also [PLAN.md](../PLAN.md) stretch goals.
+These were previously P3 candidates and are now implemented.
 
-| Priority | Item | Notes |
-|----------|------|-------|
+| Priority | Item | Status | Notes |
+|----------|------|--------|-------|
 | **High** | Typed MCP fuse payloads | ✅ | `models/sensors.py` — `CalendarEvent`, `EmailThread`, `FuseHeadspacePayload` |
 | **High** | Full multi-user web | ✅ | Session-scoped `/api/metrics`; cohort bandit priors (`COHORT_PRIOR_*`) |
 | **Medium** | Incremental X sync CLI | ✅ | Early-stop when page all known; `--full-sync` / `--full`; default incremental on `prep --sync` |
 | **Medium** | GEPA automation | ✅ | `kairos optimize nightly` + `just optimize-nightly` |
+
+## What's next (P4)
+
+Prioritized after the current demo-ready stack. See also [PLAN.md](../PLAN.md) stretch goals.
+
+| Priority | Item | Notes |
+|----------|------|-------|
+| **High** | Latest learning trace panel | Compact dashboard proof: context → rank → gate → feedback → β update from `pipeline_events` |
+| **High** | Treatment lift visualization | Show `bandit_treatments` so GEPA prompt changes become measurable treatments |
+| **Medium** | Exact LLM trace join | Add `decision_id`, prompt version, input/output, latency, reward |
 | **Medium** | Redis SSE fan-out | Mongo `pipeline_events` works cross-process; optional Redis pub/sub for lower latency |
 | **Low** | OS delivery adapter | `terminal-notifier` path exists but optional |
 | **Low** | Sleep-time consolidation | Pre-compute headspace narratives / cluster dossiers off-peak |

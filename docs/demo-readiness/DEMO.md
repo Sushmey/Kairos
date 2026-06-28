@@ -59,7 +59,7 @@ Prep runs enrich + research via `just demo-serve` (or `just demo-prep` alone). R
 | "Why clusters?" | Bookmarks arrive one-at-a-time; topics arrive as moments. Digests, not single links. |
 | "Only 2 clusters?" | Small corpus + HDBSCAN — one mega-cluster is the long tail; mechanism works as corpus grows. |
 | "Demo headspace?" | Cafe + 90m gap by default; live calendar via `kairos google connect` + sync. |
-| "GEPA / sleep-time?" | Bandit = online timing (shipped). GEPA = offline prompt improvement (CLI + API + fixtures shipped; nightly cron next). |
+| "GEPA / sleep-time?" | Bandit = online timing (shipped). GEPA = offline prompt improvement (CLI + API + fixtures + cron-safe `optimize nightly` shipped). |
 
 More depth: [FAQ.md](./FAQ.md)
 
@@ -102,7 +102,7 @@ Optional second surface: different cluster or `KAIROS_OK` (fatigue gate) — bot
 
 - **Engagement trend** sparkline (from persona gym in prep)  
 - **Bandit learning** panel — α, β, P(engage)  
-- GEPA panel: `POST /api/optimize` or `kairos optimize run --dry-run` when enough feedback; don't click "Run optimization" on stage unless runs exist  
+- GEPA panel: show a pre-seeded `optimization_runs` diff if possible; `POST /api/optimize` or `kairos optimize run --dry-run` is available, but don't depend on live Gemini latency on stage  
 
 > "The gym is how we know the policy converges before we deploy it."
 

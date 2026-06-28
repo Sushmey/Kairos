@@ -485,6 +485,9 @@ flowchart TB
         Stream["GET /api/stream SSE"]
         Notif["GET /api/notifications"]
         BanditAPI["GET /api/bandit"]
+        MetricsAPI["GET /api/metrics"]
+        OptimizeAPI["POST /api/optimize"]
+        PrepAPI["POST /api/prep/start"]
         HeartbeatAPI["POST /api/heartbeat"]
         FeedbackAPI["POST /api/feedback"]
     end
@@ -499,6 +502,9 @@ flowchart TB
     Stream --> Admin
     Notif --> User
     BanditAPI --> Admin
+    MetricsAPI --> Admin
+    OptimizeAPI --> Admin
+    PrepAPI --> Admin
     HeartbeatAPI --> HS
     FeedbackAPI --> FB
 ```
@@ -575,7 +581,7 @@ flowchart TB
 |------|--------|---------|
 | `run_heartbeat` | ✅ | Policy cycle |
 | `record_feedback` | ✅ | Bandit update |
-| `get_current_context` | ✅ | Headspace (stub until Calendar MCP wired) |
+| `get_current_context` | ✅ | Cached/demo headspace snapshot |
 | `get_cluster_summary` | ✅ | Topic → cluster lookup |
 | `get_relevant_bookmarks` | ✅ | Semantic search over bookmark index (not thesis) |
 | `add_bookmark` | — | Not exposed; use `kairos x sync` |
@@ -592,7 +598,7 @@ mindmap
       heartbeat --via-agent
       feedback
       agent-cycle
-      optimize run|readiness|eval
+      optimize run|readiness|eval|nightly
     Web
       serve
       mcp
@@ -625,6 +631,7 @@ erDiagram
     feedback_events }o--|| notifications : "notification_id"
     feedback_events }o--|| clusters : "cluster_id"
     bandit_params }o--|| clusters : "cluster_id"
+    bandit_treatments }o--|| clusters : "cluster_id"
 
     bookmarks {
         string x_tweet_id UK
@@ -674,6 +681,16 @@ erDiagram
         datetime last_updated
     }
 
+    bandit_treatments {
+        string user_id
+        string cluster_id
+        string context_class
+        string digest_style
+        float alpha
+        float beta
+        datetime last_updated
+    }
+
     prep_jobs {
         string job_id UK
         string status
@@ -696,7 +713,7 @@ erDiagram
     }
 ```
 
-Collections also include `context_cache`, `google_tokens`, and `optimization_runs` (GEPA prompt diffs).
+Collections also include `context_cache`, `google_tokens`, `oauth_states`, `sync_state`, and `optimization_runs` (GEPA prompt diffs).
 
 ---
 
@@ -748,12 +765,13 @@ flowchart TB
     subgraph Online["Online — shipped"]
         FB["feedback_events"]
         BP["bandit_params"]
+        BT["bandit_treatments"]
         TS["Thompson sampling"]
     end
 
-    subgraph Offline["Offline — shipped (manual trigger)"]
+    subgraph Offline["Offline — shipped (manual / cron-safe trigger)"]
         Eval["Eval harness<br/>fixed context×cluster fixtures"]
-        GEPA["GEPA reflection pass<br/>kairos optimize / POST /api/optimize"]
+        GEPA["GEPA reflection pass<br/>kairos optimize run|nightly / POST /api/optimize"]
         OR["optimization_runs<br/>prompt diffs"]
     end
 
@@ -763,13 +781,16 @@ flowchart TB
     end
 
     FB --> Eval
+    FB --> BP
+    FB --> BT
     Eval --> GEPA --> OR
     OR --> Diff
     BP --> Chart
+    BT --> Chart
     TS --> Online
 ```
 
-**Not yet automated:** nightly Cloud Run cron for GEPA when `gepa_ready` (see [TECH_DEBT.md](TECH_DEBT.md) P3).
+**Automation:** `kairos optimize nightly` / `just optimize-nightly` is cron-safe and skips when `gepa_ready=false`. Cloud Run Scheduler is deployment wiring, not application logic.
 
 ---
 
@@ -788,12 +809,10 @@ sequenceDiagram
     participant Bandit
 
     Note over X,Mongo: Data plane (batch / incremental)
-    User->>Ingest: kairos x sync
+    User->>Ingest: kairos bookmarks prep --sync
     Ingest->>X: GET bookmarks
     X-->>Ingest: tweets
-    Ingest->>Mongo: bookmarks + enrichment
-    User->>Ingest: kairos bookmarks embed|cluster
-    Ingest->>Mongo: embeddings + clusters
+    Ingest->>Mongo: bookmarks + enrichment + research + embeddings + clusters
 
     Note over User,Bandit: Policy plane (heartbeat loop)
     User->>Heartbeat: kairos heartbeat / POST /api/heartbeat
@@ -806,7 +825,7 @@ sequenceDiagram
 
     User->>Web: Dismiss / Snooze
     Web->>Heartbeat: POST /api/feedback
-    Heartbeat->>Mongo: feedback_events + bandit_params
+    Heartbeat->>Mongo: feedback_events + bandit_params + bandit_treatments
     Heartbeat->>Web: SSE feedback event
 
     User->>Heartbeat: next heartbeat
@@ -838,6 +857,9 @@ Central settings in `config.py` (env + `.env`):
 | `JOB_BACKEND` | `local` | `local` or `arq` for prep jobs |
 | `HEARTBEAT_DEFAULT_VIA_AGENT` | `false` | Web heartbeat uses ADK when true |
 | `GEPA_ENABLED` | `true` | Enable GEPA reflection pass |
+| `GEPA_MIN_SAMPLES` | `5` | Feedback threshold for GEPA |
+| `COHORT_PRIOR_ENABLED` | `true` | Cold-start α/β from other users on same cluster/context |
+| `COHORT_PRIOR_MIN_USERS` | `2` | Min distinct users for cohort prior |
 | `DELIVERY_TARGETS` | `web` | Adapter fan-out |
 
 ---

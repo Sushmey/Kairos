@@ -68,9 +68,9 @@ uv run kairos google verify --user-id <google-sub>
 
 ## 4. Web dashboard
 
-The web app does **not** run OAuth. It reads headspace for `KAIROS_USER_ID` if set.
+The web app does **not** run OAuth. It reads the session user's fused headspace, falling back to `KAIROS_USER_ID` when no session user is present.
 
-`GET /api/google/status` is read-only — shows whether that user has tokens.
+`GET /api/google/status` is read-only — shows whether that session/fallback user has stored tokens.
 
 ## 5. Scopes
 
