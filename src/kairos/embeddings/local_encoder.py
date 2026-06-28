@@ -11,8 +11,13 @@ def get_encoder():
     """Lazy-load sentence-transformers model."""
     global _encoder
     if _encoder is None:
-        from sentence_transformers import SentenceTransformer
-
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise ImportError(
+                "sentence-transformers is required for EMBEDDING_BACKEND=local. "
+                "Install with: uv sync --extra local"
+            ) from exc
         _encoder = SentenceTransformer(settings.embedding_model)
     return _encoder
 

@@ -17,11 +17,31 @@ def digest_to_markdown(digest: ClusterDigest) -> str:
     ]
     if digest.web_context:
         lines.extend(["**From the web:**", "", digest.web_context, ""])
+    _STATUS_MARK = {"current": "✓ current", "dated": "● dated", "stale": "✗ stale"}
     for link in digest.links:
-        label = link.get("label", link.get("url", "link"))
+        title = link.get("title") or link.get("label", link.get("url", "link"))
         mode = link.get("consumption_mode", "")
         suffix = f" — {mode}" if mode else ""
-        lines.append(f"- [{label}]({link.get('url', '#')}){suffix}")
+        lines.append(f"### {title}{suffix}")
+        if link.get("author"):
+            lines.append(f"*{link['author']}*")
+        body = link.get("summary") or link.get("excerpt")
+        if body:
+            lines.append("")
+            lines.append(body)
+        if link.get("excerpt") and link.get("summary") and link["excerpt"] != link["summary"]:
+            lines.append(f"> Saved: {link['excerpt']}")
+        signal = link.get("signal")
+        status_mark = _STATUS_MARK.get(link.get("status", ""))
+        if status_mark:
+            lines.append(f"*{status_mark}*")
+        if signal:
+            lines.append(f"_{signal}_")
+        tags = link.get("tags") or []
+        if tags:
+            lines.append(f"Tags: {', '.join(tags)}")
+        lines.append(f"[Open link]({link.get('url', '#')})")
+        lines.append("")
     if digest.citations:
         lines.extend(["", "**Sources:**"])
         for citation in digest.citations[:8]:

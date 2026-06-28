@@ -7,6 +7,13 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from kairos.config import settings
 
 _client: AsyncIOMotorClient | None = None
+_persist_connection: bool = False
+
+
+def set_mongo_persist(enabled: bool = True) -> None:
+    """Keep the client open across requests (FastAPI / long-running workers)."""
+    global _persist_connection
+    _persist_connection = enabled
 
 
 def get_mongo_client() -> AsyncIOMotorClient:
@@ -23,7 +30,10 @@ def get_database() -> AsyncIOMotorDatabase:
 
 
 async def close_mongo() -> None:
+    """Close the shared client. No-op when persist mode is on (web server)."""
     global _client
+    if _persist_connection:
+        return
     if _client is not None:
         _client.close()
         _client = None

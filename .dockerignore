@@ -1,0 +1,14 @@
+.git
+.cursor
+.codex
+.vscode
+__pycache__
+*.pyc
+.env
+.env.*
+.venv
+uv.lock
+docs/
+tests/
+*.md
+!README.md
